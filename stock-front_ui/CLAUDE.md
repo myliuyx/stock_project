@@ -95,3 +95,14 @@ Flat subdirectory structure by module:
 ## Deployment
 
 Docker multi-stage build: Node 20 builder → Nginx Alpine serving `dist/`. Nginx config at `nginx.conf`.
+
+## Documentation Index
+
+| 文档 | 说明 |
+|------|------|
+| [前后端API接口设计文档](../stock-front_ui/docs/A股股票信息缓存系统前后端API接口设计文档.md) | 前端视角 API 速查（含字段协议、TypeScript类型定义） |
+| [前端架构设计文档](../stock-front_ui/docs/A股股票信息缓存系统前端架构设计文档.md) | 前端系统设计（技术栈、模块划分、状态管理） |
+| [定时任务使用文档](../stock-fast-api/docs/定时任务使用文档.md) | ETL 任务配置管理 |
+| [故障排查指南](../docs/TROUBLESHOOTING.md) | 常见问题与解决方案 |
+
+> API 完整文档（权威来源）→ [`stock-fast-api/docs/REGISTRY.md`](../stock-fast-api/docs/REGISTRY.md)

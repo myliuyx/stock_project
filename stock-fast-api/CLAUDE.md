@@ -72,6 +72,12 @@ Core 层     →  配置 / 数据库连接 / 异常 / 响应封装      (core/)
 | `dwd_board_relation` | 5,199 | ✅ 有数据 |
 | `dwd_stock_factor_daily` | 1,267,428 | ✅ 有数据 |
 | `mart_stock_selection_daily` | 621,491 | ✅ 有数据 |
+| `mart_user_watchlist` | — | 用户自选股 |
+| `etl_checkpoint` | — | 断点续传 |
+| `etl_data_coverage` | — | 数据覆盖 |
+| `etl_backfill_task` | — | 补历史任务 |
+| `etl_job_run_log` | — | 任务日志 |
+| `app_user` | — | 用户认证 |
 
 ## API 路由模块
 
@@ -123,9 +129,12 @@ curl http://localhost:8081/api/v1/stocks/search?keyword=茅台
 
 ## 文档索引
 
-- 完整接口清单 + 请求/响应示例: [`docs/REGISTRY.md`](docs/REGISTRY.md)
-- 数据库设计文档: [`docs/A股股票信息缓存系统数据库设计文档.md`](docs/A股股票信息缓存系统数据库设计文档.md)
-- 架构设计文档: [`docs/A股股票信息缓存系统架构设计文档.md`](docs/A股股票信息缓存系统架构设计文档.md)
-- 表关系说明: [`docs/A股股票信息缓存系统表关系说明文档.md`](docs/A股股票信息缓存系统表关系说明文档.md)
-- 定时任务使用文档: [`docs/定时任务使用文档.md`](docs/定时任务使用文档.md)
-- 数据库 DDL: [`docs/09_postgresql_ddl.sql`](docs/09_postgresql_ddl.sql)
+| 文档 | 说明 |
+|------|------|
+| [REGISTRY.md](docs/REGISTRY.md) | **完整 API 文档**（42端点）— 权威来源 |
+| [数据库设计文档](docs/A股股票信息缓存系统数据库设计文档.md) | 数据库表结构设计（完整，已补全） |
+| [架构设计文档](docs/A股股票信息缓存系统架构设计文档.md) | 系统架构与数据流 |
+| [表关系说明](docs/A股股票信息缓存系统表关系说明文档.md) | 表之间关联关系 |
+| [定时任务使用文档](docs/定时任务使用文档.md) | ETL 任务配置管理 |
+| [DDL 脚本](../docs/09_postgresql_ddl.sql) | 数据库建表脚本（16张表） |
+| [DDL 参考](../docs/DDL_REFERENCE.md) | DDL 脚本使用说明 |

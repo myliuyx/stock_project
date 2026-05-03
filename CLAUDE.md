@@ -67,3 +67,32 @@ stock_project/
 Each sub-project has its own CLAUDE.md with complete details:
 - Backend specifics → `stock-fast-api/CLAUDE.md`
 - Frontend specifics → `stock-front_ui/CLAUDE.md`
+
+## Documentation Index
+
+All project documentation lives in `docs/` (root-level user/ops docs) and each sub-project's `docs/` folder (technical reference docs).
+
+**文档层级结构**：
+
+```
+一级 — 快速开始
+├── docs/QUICK_START.md          首次安装部署
+└── docs/DEPLOYMENT.md           Docker 部署详解
+
+二级 — 用户指南
+├── docs/USER_GUIDE.md           功能使用方法
+└── docs/TROUBLESHOOTING.md      常见问题与解决方案
+
+三级 — 参考文档
+├── stock-fast-api/docs/REGISTRY.md                             # API 完整文档（42端点）— 权威来源
+├── stock-fast-api/docs/A股股票信息缓存系统数据库设计文档.md  # 数据库表结构
+├── stock-fast-api/docs/A股股票信息缓存系统表关系说明文档.md  # 表之间关联
+├── stock-fast-api/docs/A股股票信息缓存系统架构设计文档.md    # 系统架构与数据流
+└── stock-front_ui/docs/A股股票信息缓存系统前后端API接口设计文档.md  # 前端视角 API 速查
+
+四级 — 运维指南
+├── docs/DDL_REFERENCE.md                                        # 数据库 DDL 脚本说明
+└── stock-fast-api/docs/定时任务使用文档.md                      # ETL 任务配置管理
+```
+
+**文档导航入口**：`docs/README.md` — 包含所有文档的层级索引和快速链接。

@@ -408,4 +408,6 @@ psql -h <主机> -U <用户> -d stock_db -f docs/09_postgresql_ddl.sql
 
 - [快速入门指南](QUICK_START.md)
 - [用户使用指南](USER_GUIDE.md)
+- [故障排查指南](TROUBLESHOOTING.md)
+- [DDL 脚本参考](DDL_REFERENCE.md)
 - [API 接口文档](../stock-fast-api/docs/REGISTRY.md)

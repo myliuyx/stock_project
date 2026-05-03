@@ -403,4 +403,285 @@
 `(trade_date, symbol)`
 
 #### 7.8.3 字段定义
-| 字段名 | 类型 |
+| 字段名 | 类型 | 说明 |
+|-------|------|------|
+| trade_date | date | 交易日 |
+| symbol | varchar(16) | 股票代码 |
+| ma5 | numeric(18,4) | 5日均线 |
+| ma10 | numeric(18,4) | 10日均线 |
+| ma20 | numeric(18,4) | 20日均线 |
+| ma60 | numeric(18,4) | 60日均线 |
+| ma120 | numeric(18,4) | 120日均线 |
+| ma250 | numeric(18,4) | 250日均线 |
+| high_20 | numeric(18,4) | 20日最高价 |
+| high_60 | numeric(18,4) | 60日最高价 |
+| low_20 | numeric(18,4) | 20日最低价 |
+| low_60 | numeric(18,4) | 60日最低价 |
+| pct_5d | numeric(10,4) | 5日涨幅 |
+| pct_10d | numeric(10,4) | 10日涨幅 |
+| pct_20d | numeric(10,4) | 20日涨幅 |
+| pct_60d | numeric(10,4) | 60日涨幅 |
+| volume_ma5 | numeric(20,2) | 5日均量 |
+| volume_ma10 | numeric(20,2) | 10日均量 |
+| rsi_6 | numeric(10,4) | RSI(6) |
+| rsi_14 | numeric(10,4) | RSI(14) |
+| atr_14 | numeric(18,4) | ATR(14) |
+| macd_dif | numeric(18,4) | MACD DIF |
+| macd_dea | numeric(18,4) | MACD DEA |
+| macd_hist | numeric(18,4) | MACD 柱状图 |
+| is_new_high_60d | boolean | 是否创60日新高 |
+| is_break_ma20 | boolean | 是否突破20日均线 |
+| trend_score | numeric(10,4) | 趋势评分 |
+| updated_at | timestamp | 更新时间 |
+
+#### 7.8.4 索引建议
+- 主键：`(trade_date, symbol)`
+- 普通索引：`(symbol, trade_date desc)`
+
+---
+
+### 7.9 选股宽表 mart_stock_selection_daily
+#### 7.9.1 作用
+用于选股和分析的宽表，汇总行情 + 因子 + 财务数据，一次查询可完成多维度筛选。
+
+#### 7.9.2 主键
+`(trade_date, symbol)`
+
+#### 7.9.3 字段定义
+| 字段名 | 类型 | 说明 |
+|-------|------|------|
+| trade_date | date | 交易日 |
+| symbol | varchar(16) | 股票代码 |
+| name | varchar(64) | 股票简称 |
+| exchange | varchar(8) | 交易所 |
+| security_type | varchar(32) | 股票类型 |
+| is_st | boolean | 是否ST |
+| close_price | numeric(18,4) | 收盘价 |
+| change_pct | numeric(10,4) | 涨跌幅 |
+| volume_ratio | numeric(10,4) | 量比 |
+| turnover_rate_f | numeric(10,4) | 自由流通换手率 |
+| amplitude | numeric(10,4) | 振幅 |
+| market_value | numeric(20,2) | 总市值 |
+| circulating_market_value | numeric(20,2) | 流通市值 |
+| pe_ttm | numeric(18,4) | 市盈率TTM |
+| pb | numeric(18,4) | 市净率 |
+| ps_ttm | numeric(18,4) | 市销率TTM |
+| ma5 | numeric(18,4) | 5日均线 |
+| ma10 | numeric(18,4) | 10日均线 |
+| ma20 | numeric(18,4) | 20日均线 |
+| ma60 | numeric(18,4) | 60日均线 |
+| rsi_14 | numeric(10,4) | RSI(14) |
+| macd_dif | numeric(18,4) | MACD DIF |
+| macd_dea | numeric(18,4) | MACD DEA |
+| macd_hist | numeric(18,4) | MACD 柱状图 |
+| is_new_high_60d | boolean | 是否创60日新高 |
+| is_break_ma20 | boolean | 是否突破20日均线 |
+| trend_score | numeric(10,4) | 趋势评分 |
+| roe | numeric(10,4) | 净资产收益率 |
+| roa | numeric(10,4) | 总资产收益率 |
+| gross_margin | numeric(10,4) | 毛利率 |
+| net_margin | numeric(10,4) | 净利率 |
+| debt_to_asset | numeric(10,4) | 资产负债率 |
+| revenue_yoy | numeric(10,4) | 营收同比 |
+| net_profit_yoy | numeric(10,4) | 净利润同比 |
+| board_codes | varchar(512) | 板块代码（逗号分隔） |
+| board_names | varchar(512) | 板块名称（逗号分隔） |
+| industry_l1 | varchar(64) | 一级行业 |
+| industry_l2 | varchar(64) | 二级行业 |
+| area | varchar(64) | 所属地域 |
+| is_limit_up | boolean | 是否涨停 |
+| is_limit_down | boolean | 是否跌停 |
+| suspended_flag | boolean | 是否停牌 |
+| composite_score | numeric(10,4) | 综合评分 |
+| rank_pct | numeric(10,4) | 排名百分位 |
+| updated_at | timestamp | 更新时间 |
+
+#### 7.9.4 索引建议
+- 主键：`(trade_date, symbol)`
+- 普通索引：`(symbol)`
+- 普通索引：`(trade_date)`
+
+---
+
+### 7.10 用户自选股表 mart_user_watchlist
+#### 7.10.1 作用
+用于保存用户的自选股列表。
+
+#### 7.10.2 主键
+`id`
+
+#### 7.10.3 字段定义
+| 字段名 | 类型 | 说明 |
+|-------|------|------|
+| id | bigserial | 自增主键 |
+| user_id | varchar(64) | 用户ID |
+| symbol | varchar(16) | 股票代码 |
+| added_at | timestamp | 添加时间 |
+
+#### 7.10.4 索引建议
+- 主键：`(id)`
+- 唯一索引：`(user_id, symbol)`
+- 普通索引：`(user_id)`
+
+---
+
+## 8. ETL 管理表设计
+
+### 8.1 任务运行表 etl_job_run
+#### 8.1.1 作用
+记录每次 ETL 任务的执行情况，支持审计和问题排查。
+
+#### 8.1.2 主键
+`id`
+
+#### 8.1.3 字段定义
+| 字段名 | 类型 | 说明 |
+|-------|------|------|
+| id | bigserial | 主键 |
+| job_name | varchar(64) | 任务名称 |
+| biz_date | date | 业务日期 |
+| status | varchar(16) | 状态（PENDING/RUNNING/SUCCESS/FAILED） |
+| start_time | timestamp | 开始时间 |
+| end_time | timestamp | 结束时间 |
+| duration_ms | bigint | 耗时（毫秒） |
+| rows_raw | int | 原始记录数 |
+| rows_written | int | 写入记录数 |
+| error_message | text | 错误信息 |
+| created_at | timestamp | 创建时间 |
+
+#### 8.1.4 索引建议
+- 主键：`(id)`
+- 普通索引：`(job_name, biz_date)`
+- 普通索引：`(status)`
+
+---
+
+### 8.2 检查点表 etl_checkpoint
+#### 8.2.1 作用
+支持断点续传，记录任务执行进度。
+
+#### 8.2.2 主键
+`(job_name, checkpoint_key)`
+
+#### 8.2.3 字段定义
+| 字段名 | 类型 | 说明 |
+|-------|------|------|
+| job_name | varchar(64) | 任务名称 |
+| checkpoint_key | varchar(64) | 检查点键 |
+| checkpoint_value | varchar(128) | 检查点值 |
+| updated_at | timestamp | 更新时间 |
+
+---
+
+### 8.3 数据覆盖表 etl_data_coverage
+#### 8.3.1 作用
+跟踪每只股票各类型数据的覆盖范围。
+
+#### 8.3.2 主键
+`(symbol, data_type)`
+
+#### 8.3.3 字段定义
+| 字段名 | 类型 | 说明 |
+|-------|------|------|
+| symbol | varchar(16) | 股票代码 |
+| data_type | varchar(32) | 数据类型（DAILY/FINANCE/FACTOR） |
+| start_date | date | 数据起始日期 |
+| end_date | date | 数据结束日期 |
+| is_full_history | boolean | 是否完整历史 |
+| last_sync_at | timestamp | 最后同步时间 |
+| updated_at | timestamp | 更新时间 |
+
+---
+
+### 8.4 补历史任务表 etl_backfill_task
+#### 8.4.1 作用
+记录补历史任务的执行状态。
+
+#### 8.4.2 主键
+`id`
+
+#### 8.4.3 字段定义
+| 字段名 | 类型 | 说明 |
+|-------|------|------|
+| id | bigserial | 主键 |
+| symbol | varchar(16) | 股票代码 |
+| data_type | varchar(32) | 数据类型 |
+| start_date | date | 起始日期 |
+| end_date | date | 结束日期 |
+| status | varchar(16) | 状态 |
+| progress | int | 进度（0-100） |
+| rows_written | int | 写入记录数 |
+| error_message | text | 错误信息 |
+| force | boolean | 是否强制重跑 |
+| created_at | timestamp | 创建时间 |
+| updated_at | timestamp | 更新时间 |
+
+#### 8.4.4 索引建议
+- 主键：`(id)`
+- 普通索引：`(symbol)`
+- 普通索引：`(status)`
+- 普通索引：`(created_at desc)`
+
+---
+
+### 8.5 任务日志表 etl_job_run_log
+#### 8.5.1 作用
+存储 ETL 任务执行过程中的详细日志。
+
+#### 8.5.2 主键
+`id`
+
+#### 8.5.3 字段定义
+| 字段名 | 类型 | 说明 |
+|-------|------|------|
+| id | bigserial | 主键 |
+| job_id | int | 任务ID |
+| level | varchar(16) | 日志级别（INFO/WARN/ERROR） |
+| message | text | 日志内容 |
+| created_at | timestamp | 创建时间 |
+
+#### 8.5.4 索引建议
+- 主键：`(id)`
+- 普通索引：`(job_id)`
+- 普通索引：`(created_at)`
+
+---
+
+## 9. 表关系总结
+
+### 9.1 核心表关系图
+
+```
+dwd_security_master (主键: symbol)
+    │
+    ├── dwd_stock_daily (外键: symbol)
+    ├── dwd_stock_adjust_factor (外键: symbol)
+    ├── dwd_stock_financial_indicator (外键: symbol)
+    ├── dwd_stock_factor_daily (外键: symbol)
+    ├── mart_stock_selection_daily (外键: symbol)
+    └── dwd_board_relation (外键: symbol)
+
+dwd_trade_calendar (主键: exchange, trade_date)
+    └── 被各任务引用判断是否为交易日
+
+dwd_board_master (主键: board_code)
+    │
+    └── dwd_board_relation (外键: board_code)
+```
+
+### 9.2 派生出表关系
+
+```
+dwd_stock_daily + dwd_stock_factor_daily + dwd_stock_financial_indicator
+    │
+    └── mart_stock_selection_daily（选股宽表，汇总以上所有表的数据）
+```
+
+---
+
+## 10. 相关文档
+
+- [表关系说明文档](A股股票信息缓存系统表关系说明文档.md)
+- [REGISTRY.md（API接口）](../stock-fast-api/docs/REGISTRY.md)
+- [定时任务使用文档](定时任务使用文档.md)
+- [DDL脚本](../09_postgresql_ddl.sql)
