@@ -1,202 +1,6 @@
 # A股股票信息缓存系统 / A-Stock Information Caching System
 
-[English](#english) | [中文](#中文)
-
----
-
-## English
-
-### Overview
-
-A-Stock Information Caching System is a local data analysis platform for China's A-share market (A股). It synchronizes daily market data from [baostock](http://www.baostock.com/) into a local PostgreSQL database and provides a full-featured web dashboard for stock screening, individual stock analysis, sector analysis, and ETL job monitoring.
-
-### Features
-
-- **Daily Data Sync** — Automatic synchronization of full-market OHLCV data, financial indicators, and technical factors after market close
-- **Smart Stock Screening** — Filter stocks by technical indicators (MA, RSI, MACD, ATR) and financial metrics (ROE, revenue, P/E)
-- **Individual Stock Analysis** — K-line charts, historical prices, technical factors, financial data, and board membership
-- **Sector/Board Analysis** — Industry boards, concept boards, and member stocks
-- **ETL Job Monitoring** — Real-time task status, manual triggering, execution logs
-- **Historical Data Backfill** — Supplement missing data for individual stocks
-- **Data Coverage Tracking** — Monitor historical data completeness per stock
-
-### Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      Frontend (Vue 3)                       │
-│   Dashboard │ Selection │ Stock Detail │ Boards │ Jobs      │
-└────────────────────────────┬────────────────────────────────┘
-                             │ REST API (/api/v1)
-┌────────────────────────────▼────────────────────────────────┐
-│                   Backend (FastAPI)                         │
-│  Router → Schema → Service → Repository                     │
-│  APScheduler (Daily 18:00-21:30 Beijing Time)              │
-└────────────────────────────┬────────────────────────────────┘
-                             │
-┌────────────────────────────▼────────────────────────────────┐
-│              PostgreSQL (13 tables, ~6.3M rows)             │
-│  dwd_stock_daily │ dwd_stock_factor_daily │ mart_selection  │
-└────────────────────────────┬────────────────────────────────┘
-                             │
-┌────────────────────────────▼────────────────────────────────┐
-│                     Data Source                             │
-│                   baostock.com                              │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Tech Stack
-
-| Layer | Technology |
-|-------|------------|
-| Frontend | Vue 3, TypeScript, Vite, Element Plus, ECharts, lightweight-charts |
-| Backend | FastAPI, SQLAlchemy, APScheduler, Pydantic |
-| Database | PostgreSQL 15+ |
-| Data Source | baostock, efinance |
-
-### Quick Start
-
-#### Option 1: Docker Compose (Recommended)
-
-```bash
-git clone https://github.com/myliuyx/stock_project.git
-cd stock-project/stock-fast-api
-
-# Configure environment
-cp .env.example .env
-# Edit .env with your database and JWT settings
-
-# Start services
-docker-compose up -d
-
-# Frontend (separate)
-cd ../stock-front_ui
-docker build -t stock-frontend .
-docker run -d -p 5173:80 --name stock-frontend stock-frontend
-```
-
-#### Option 2: Manual Setup
-
-**Backend:**
-
-```bash
-cd stock-fast-api
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Configure environment
-cp .env.example .env
-# Edit .env with your database and JWT settings
-
-# Initialize database
-psql -h <host> -U <user> -d <dbname> -f docs/09_postgresql_ddl.sql
-
-# Start server
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-**Frontend:**
-
-```bash
-cd stock-front_ui
-
-npm install
-
-npm run dev
-# Visit http://localhost:5173
-```
-
-### Environment Variables
-
-**Backend (`stock-fast-api/.env`):**
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `DB_HOST` | Yes | - | PostgreSQL host |
-| `DB_PORT` | No | 5432 | PostgreSQL port |
-| `DB_NAME` | Yes | - | Database name |
-| `DB_USER` | Yes | - | Database user |
-| `DB_PASSWORD` | Yes | - | Database password |
-| `JWT_SECRET_KEY` | Yes | - | JWT signing key (min 32 chars) |
-| `CORS_ORIGINS` | No | - | Allowed CORS origins (comma-separated) |
-
-### Project Structure
-
-```
-stock_project/
-├── stock-fast-api/          # FastAPI backend
-│   ├── app/
-│   │   ├── core/            # Config, database, exceptions, response
-│   │   ├── routers/         # API route modules (10 files, 42 endpoints)
-│   │   ├── schemas/         # Pydantic DTOs
-│   │   ├── services/        # Business logic (10 services)
-│   │   ├── repositories/    # Data access (6 repositories)
-│   │   └── jobs/            # ETL job scripts (10 jobs)
-│   ├── docs/                # API registry, DB design, architecture docs
-│   └── docker-compose.yml   # Docker deployment
-│
-└── stock-front_ui/          # Vue 3 frontend
-    ├── src/
-    │   ├── api/             # Axios API layer
-    │   ├── components/      # Vue components by module
-    │   ├── pages/           # Route page components
-    │   ├── stores/          # Pinia state management
-    │   └── layouts/         # Main layout
-    └── nginx.conf           # Nginx configuration
-```
-
-### Database Tables
-
-| Table | Rows (approx.) | Description |
-|-------|---------------|-------------|
-| `dwd_security_master` | 5,198 | Stock master data (symbol, name, exchange, industry) |
-| `dwd_stock_daily` | 4.87M | Daily OHLCV data |
-| `dwd_stock_financial_indicator` | 35,811 | Financial indicators |
-| `dwd_stock_adjust_factor` | 33,948 | Price adjustment factors |
-| `dwd_board_master` | 83 | Board/sector definitions |
-| `dwd_board_relation` | 5,199 | Stock-board relationships |
-| `dwd_stock_factor_daily` | 1.27M | Technical factors (MA, RSI, MACD, ATR) |
-| `mart_stock_selection_daily` | 621,491 | Stock selection wide table |
-| `etl_job_run` | 934+ | ETL job execution records |
-
-### API Documentation
-
-API base URL: `/api/v1`
-
-| Module | Endpoints | Description |
-|--------|-----------|-------------|
-| Auth | 2 | Login, token verification |
-| Dashboard | 4 | System overview, task summary |
-| Selection | 5 | Stock screening, export |
-| Stocks | 9 | Quote search, profile, daily, factors, finance |
-| Jobs | 9 | Task list, trigger, cancel, logs |
-| Coverage | 3 | Data coverage overview |
-| Boards | 3 | Board list, detail, members |
-| Backfill | 2 | Historical data backfill |
-| Watchlist | 4 | User watchlist management |
-
-Full API documentation: [`stock-fast-api/docs/REGISTRY.md`](stock-fast-api/docs/REGISTRY.md)
-
-### Scheduled Tasks
-
-All times in Beijing time (UTC+8):
-
-| Task ID | Schedule | Description |
-|---------|----------|-------------|
-| `security_master_sync` | Mon-Fri 18:00 | Sync stock master data |
-| `daily_stock_sync` | Mon-Fri 19:00 | Sync daily OHLCV |
-| `factor_compute` | Mon-Fri 20:30 | Compute technical factors |
-| `selection_mart` | Mon-Fri 21:30 | Build stock selection mart |
-| `cleanup_logs` | Daily 00:05 | Clean old logs (>3 days) |
-
-### License
-
-MIT License
+[中文](#中文) | [English](#english)
 
 ---
 
@@ -256,7 +60,7 @@ A 股股票信息缓存系统是一个 A 股本地化数据分析平台，通过
 
 ```bash
 git clone https://github.com/myliuyx/stock_project.git
-cd stock-project/stock-fast-api
+cd stock_project/stock-fast-api
 
 # 配置环境变量
 cp .env.example .env
@@ -400,5 +204,210 @@ API 前缀：`/api/v1`
 - [架构设计文档](stock-fast-api/docs/A股股票信息缓存系统架构设计文档.md)
 
 ### 许可证
+
+MIT License
+
+---
+
+## English
+
+### Overview
+
+A-Stock Information Caching System is a local data analysis platform for China's A-share market (A股). It synchronizes daily market data from [baostock](http://www.baostock.com/) into a local PostgreSQL database and provides a full-featured web dashboard for stock screening, individual stock analysis, sector analysis, and ETL job monitoring.
+
+### Features
+
+- **Daily Data Sync** — Automatic synchronization of full-market OHLCV data, financial indicators, and technical factors after market close
+- **Smart Stock Screening** — Filter stocks by technical indicators (MA, RSI, MACD, ATR) and financial metrics (ROE, revenue, P/E)
+- **Individual Stock Analysis** — K-line charts, historical prices, technical factors, financial data, and board membership
+- **Sector/Board Analysis** — Industry boards, concept boards, and member stocks
+- **ETL Job Monitoring** — Real-time task status, manual triggering, execution logs
+- **Historical Data Backfill** — Supplement missing data for individual stocks
+- **Data Coverage Tracking** — Monitor historical data completeness per stock
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      Frontend (Vue 3)                       │
+│   Dashboard │ Selection │ Stock Detail │ Boards │ Jobs      │
+└────────────────────────────┬────────────────────────────────┘
+                             │ REST API (/api/v1)
+┌────────────────────────────▼────────────────────────────────┐
+│                   Backend (FastAPI)                         │
+│  Router → Schema → Service → Repository                     │
+│  APScheduler (Daily 18:00-21:30 Beijing Time)              │
+└────────────────────────────┬────────────────────────────────┘
+                             │
+┌────────────────────────────▼────────────────────────────────┐
+│              PostgreSQL (13 tables, ~6.3M rows)             │
+│  dwd_stock_daily │ dwd_stock_factor_daily │ mart_selection  │
+└────────────────────────────┬────────────────────────────────┘
+                             │
+┌────────────────────────────▼────────────────────────────────┐
+│                     Data Source                             │
+│                   baostock.com                              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Tech Stack
+
+| Layer | Technology |
+|-------|------------|
+| Frontend | Vue 3, TypeScript, Vite, Element Plus, ECharts, lightweight-charts |
+| Backend | FastAPI, SQLAlchemy, APScheduler, Pydantic |
+| Database | PostgreSQL 15+ |
+| Data Source | baostock, efinance |
+
+### Quick Start
+
+#### Option 1: Docker Compose (Recommended)
+
+```bash
+git clone https://github.com/myliuyx/stock_project.git
+cd stock_project/stock-fast-api
+
+# Configure environment
+cp .env.example .env
+# Edit .env with your database and JWT settings
+
+# Start services
+docker-compose up -d
+
+# Frontend (separate)
+cd ../stock-front_ui
+docker build -t stock-frontend .
+docker run -d -p 5173:80 --name stock-frontend stock-frontend
+```
+
+#### Option 2: Manual Setup
+
+**Backend:**
+
+```bash
+cd stock-fast-api
+
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Configure environment
+cp .env.example .env
+# Edit .env with your database and JWT settings
+
+# Initialize database
+psql -h <host> -U <user> -d <dbname> -f docs/09_postgresql_ddl.sql
+
+# Start server
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+**Frontend:**
+
+```bash
+cd stock-front_ui
+
+npm install
+
+npm run dev
+# Visit http://localhost:5173
+```
+
+### Environment Variables
+
+**Backend (`stock-fast-api/.env`):**
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `DB_HOST` | Yes | - | PostgreSQL host |
+| `DB_PORT` | No | 5432 | PostgreSQL port |
+| `DB_NAME` | Yes | - | Database name |
+| `DB_USER` | Yes | - | Database user |
+| `DB_PASSWORD` | Yes | - | Database password |
+| `JWT_SECRET_KEY` | Yes | - | JWT signing key (min 32 chars) |
+| `CORS_ORIGINS` | No | - | Allowed CORS origins (comma-separated) |
+
+### Project Structure
+
+```
+stock_project/
+├── stock-fast-api/          # FastAPI backend
+│   ├── app/
+│   │   ├── core/            # Config, database, exceptions, response
+│   │   ├── routers/         # API route modules (10 files, 42 endpoints)
+│   │   ├── schemas/         # Pydantic DTOs
+│   │   ├── services/        # Business logic (10 services)
+│   │   ├── repositories/    # Data access (6 repositories)
+│   │   └── jobs/            # ETL job scripts (10 jobs)
+│   ├── docs/                # API registry, DB design, architecture docs
+│   └── docker-compose.yml   # Docker deployment
+│
+└── stock-front_ui/          # Vue 3 frontend
+    ├── src/
+    │   ├── api/             # Axios API layer
+    │   ├── components/      # Vue components by module
+    │   ├── pages/           # Route page components
+    │   ├── stores/          # Pinia state management
+    │   └── layouts/         # Main layout
+    └── nginx.conf           # Nginx configuration
+```
+
+### Database Tables
+
+| Table | Rows (approx.) | Description |
+|-------|---------------|-------------|
+| `dwd_security_master` | 5,198 | Stock master data (symbol, name, exchange, industry) |
+| `dwd_stock_daily` | 4.87M | Daily OHLCV data |
+| `dwd_stock_financial_indicator` | 35,811 | Financial indicators |
+| `dwd_stock_adjust_factor` | 33,948 | Price adjustment factors |
+| `dwd_board_master` | 83 | Board/sector definitions |
+| `dwd_board_relation` | 5,199 | Stock-board relationships |
+| `dwd_stock_factor_daily` | 1.27M | Technical factors (MA, RSI, MACD, ATR) |
+| `mart_stock_selection_daily` | 621,491 | Stock selection wide table |
+| `etl_job_run` | 934+ | ETL job execution records |
+
+### API Documentation
+
+API base URL: `/api/v1`
+
+| Module | Endpoints | Description |
+|--------|-----------|-------------|
+| Auth | 2 | Login, token verification |
+| Dashboard | 4 | System overview, task summary |
+| Selection | 5 | Stock screening, export |
+| Stocks | 9 | Quote search, profile, daily, factors, finance |
+| Jobs | 9 | Task list, trigger, cancel, logs |
+| Coverage | 3 | Data coverage overview |
+| Boards | 3 | Board list, detail, members |
+| Backfill | 2 | Historical data backfill |
+| Watchlist | 4 | User watchlist management |
+
+Full API documentation: [`stock-fast-api/docs/REGISTRY.md`](stock-fast-api/docs/REGISTRY.md)
+
+### Scheduled Tasks
+
+All times in Beijing time (UTC+8):
+
+| Task ID | Schedule | Description |
+|---------|----------|-------------|
+| `security_master_sync` | Mon-Fri 18:00 | Sync stock master data |
+| `daily_stock_sync` | Mon-Fri 19:00 | Sync daily OHLCV |
+| `factor_compute` | Mon-Fri 20:30 | Compute technical factors |
+| `selection_mart` | Mon-Fri 21:30 | Build stock selection mart |
+| `cleanup_logs` | Daily 00:05 | Clean old logs (>3 days) |
+
+### Related Documents
+
+- [Quick Start Guide](docs/QUICK_START.md)
+- [User Guide](docs/USER_GUIDE.md)
+- [Deployment Guide](docs/DEPLOYMENT.md)
+- [API Registry](stock-fast-api/docs/REGISTRY.md)
+- [Database Design](stock-fast-api/docs/A股股票信息缓存系统数据库设计文档.md)
+- [Architecture Design](stock-fast-api/docs/A股股票信息缓存系统架构设计文档.md)
+
+### License
 
 MIT License
