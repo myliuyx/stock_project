@@ -1,0 +1,35 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run *)",
+      "Bash(npm install *)",
+      "Bash(nginx -v)",
+      "Bash(nginx -s stop)",
+      "Bash(sudo nginx *)",
+      "Bash(sudo cp *)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:8080/)",
+      "Bash(curl -s http://localhost:8080/)",
+      "Bash(npx vue-tsc *)",
+      "Bash(npx vite *)",
+      "Bash(dpkg -l)",
+      "Bash(apt list *)",
+      "Bash(pip install *)",
+      "Bash(python3 -c \"import pexpect\")",
+      "Bash(python3 *)",
+      "Bash(tar czf *)",
+      "Read(//tmp/**)",
+      "Bash(timeout 10 ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no huajuan@192.168.3.18 \"echo reachable\")",
+      "Bash(timeout 15 sshpass *)",
+      "Bash(tar tzf *)",
+      "Bash(tar *)",
+      "Bash(scp *)",
+      "Bash(ssh -o StrictHostKeyChecking=no -o BatchMode=yes huajuan@192.168.3.18 \"echo ok\")",
+      "Bash(sudo -S apt-get install -y sshpass)",
+      "Bash(sshpass *)",
+      "Bash(ping *)",
+      "Bash(git ls-remote *)",
+      "Bash(git clone *)",
+      "Bash(git config *)"
+    ]
+  }
+}
