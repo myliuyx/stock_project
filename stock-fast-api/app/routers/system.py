@@ -1,3 +1,5 @@
+import os
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -81,11 +83,12 @@ def get_meta(db: Session = Depends(get_db)):
         latest_trade_date = "ERROR"
         latest_daily_date = "ERROR"
         scheduler_status = "ERROR"
+        latest_job_status = "ERROR"
         db_status = f"ERROR: {str(e)[:50]}"
 
     from app.core.config import settings
     return success_response({
-        "env": "prod",
+        "env": os.environ.get("APP_ENV", "dev"),
         "version": settings.APP_VERSION,
         "db_status": db_status,
         "latest_trade_date": latest_trade_date,

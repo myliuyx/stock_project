@@ -14,7 +14,7 @@ A-stock (A股) stock information caching system frontend — a Vue 3 + TypeScrip
 # Install dependencies
 npm install
 
-# Start dev server (port 5173, proxies /api to http://192.168.3.18:8000)
+# Start dev server (port 5173, proxies /api to backend FastAPI)
 npm run dev
 
 # Build production bundle
@@ -40,12 +40,14 @@ History mode, lazy-loaded route components. Auth guard checks `localStorage.getI
 | `/` | → `/dashboard` | Redirect |
 | `/login` | LoginPage | Login |
 | `/dashboard` | DashboardPage | Console overview |
+| `/wendgu` | WendguPage | 问股分析 (strategy-based stock analysis) |
 | `/selection` | SelectionPage | Stock screening workstation |
 | `/watchlist` | WatchlistPage | Watchlist management |
 | `/stocks/:symbol` | StockDetailPage | Individual stock detail |
 | `/boards` | BoardListPage | Sector/plate list |
 | `/boards/:boardCode` | BoardDetailPage | Sector detail |
 | `/jobs` | JobListPage | Task management |
+| `/task-trigger` | TaskTriggerPage | Manual task trigger |
 | `/jobs/:jobId` | JobDetailPage | Task detail |
 | `/coverage` | CoveragePage | Data coverage |
 | `/backfill` | BackfillPage | Historical data backfill |
@@ -59,7 +61,7 @@ Unified Axios instance in `src/api/request.ts` with:
 - Business error code handling (`code !== 0` → reject with `isBusinessError`)
 - HTTP error handling: 401 clears token and redirects to `/login`, 403/5xx/user-friendly messages
 
-API modules by domain: `auth.ts`, `dashboard.ts`, `selection.ts`, `stock.ts`, `board.ts`, `job.ts`, `coverage.ts`, `backfill.ts`, `watchlist.ts`
+API modules by domain: `auth.ts`, `dashboard.ts`, `selection.ts`, `stock.ts`, `board.ts`, `job.ts`, `coverage.ts`, `backfill.ts`, `watchlist.ts`, `strategy.ts`
 
 ### State management (`src/stores/`)
 - `app.ts` — token, user info, login state
@@ -73,9 +75,10 @@ Flat subdirectory structure by module:
 - **job/**: `JobLogViewer`
 - **selection/**: `FilterPanel`, `ResultTable`
 - **stock/**: `KLineChart` (lightweight-charts), `VolumeChart` (ECharts)
+- **strategy/**: `StrategySelector`
 
 ### Types (`src/types/`)
-`common.ts`, `job.ts`, `stock.ts`, `selection.ts`, `board.ts`, `watchlist.ts`
+`common.ts`, `job.ts`, `stock.ts`, `selection.ts`, `board.ts`, `watchlist.ts`, `strategy.ts`
 
 ### Layout
 `src/layouts/MainLayout.vue` — sidebar + top bar + content area

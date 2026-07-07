@@ -20,13 +20,18 @@ forward_adj_close / backward_adj_close: 保留为空（Baostock 无真实价格�
 rights_issue_ratio: 保留为空（Baostock 无此字段）
 """
 
+import logging
+
 import baostock as bs
 import psycopg2
 from psycopg2.extras import execute_values
-from datetime import datetime, date
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from datetime import datetime, date, timedelta
 import time
 import os
 import sys
+
+BAOSTOCK_API_TIMEOUT = int(os.environ.get('BAOSTOCK_API_TIMEOUT', '30'))
 
 # ========== 配置 ==========
 DB_CONFIG = {
@@ -46,18 +51,24 @@ LOG_DIR = os.environ.get('SYNC_LOG_DIR', '/app/logs')
 # ========== 工具函数 ==========
 
 def setup_logging():
+    """配置日志，直接添加 handler（不依赖 basicConfig，避免 uvicorn 已有 handler 导致失效）"""
     os.makedirs(LOG_DIR, exist_ok=True)
     log_file = os.path.join(LOG_DIR, f'sync_adjust_factor_{datetime.now().strftime("%Y%m%d")}.log')
-    import logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s [%(levelname)s] %(message)s',
-        handlers=[
-            logging.FileHandler(log_file, encoding='utf-8'),
-            logging.StreamHandler(sys.stdout)
-        ]
-    )
-    return logging.getLogger('sync_adjust_factor')
+    logger = logging.getLogger('sync_adjust_factor')
+
+    formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
+
+    # 文件日志
+    fh = logging.FileHandler(log_file, encoding='utf-8')
+    fh.setFormatter(formatter)
+    logger.addHandler(fh)
+
+    # stdout 日志（容器日志）
+    sh = logging.StreamHandler(sys.stdout)
+    sh.setFormatter(formatter)
+    logger.addHandler(sh)
+
+    return logger
 
 
 def to_baostock_code(symbol: str) -> str:
@@ -105,25 +116,55 @@ def get_event_type(cash_dividend: float, stock_dividend: float, reserve_to_stock
     return 'OTHER'
 
 
-def fetch_adjust_factor(bao_code: str, start_year: int, end_year: int) -> list:
-    """获取指定年份范围的复权因子数据"""
-    records = []
-    for year in range(start_year, end_year + 1):
-        rs = bs.query_adjust_factor(bao_code, start_date=f'{year}-01-01', end_date=f'{year}-12-31')
+def _exec_with_timeout(func, timeout=30):
+    """在线程池中执行函数，超时则抛异常。避免 baostock 单例导致的主线程永久阻塞"""
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(func)
+        try:
+            return future.result(timeout=timeout)
+        except FuturesTimeoutError:
+            future.cancel()
+            raise TimeoutError(f"baostock API 调用超时 ({timeout}s)")
+
+
+def fetch_adjust_factor_range(bao_code: str, start_date: str, end_date: str) -> list:
+    """获取指定日期范围的复权因子数据（单次查询）"""
+
+    def _do_query():
+        records = []
+        rs = bs.query_adjust_factor(bao_code, start_date=start_date, end_date=end_date)
         while rs.error_code == '0' and rs.next():
             records.append(rs.get_row_data())
-        time.sleep(RATE_LIMIT_DELAY)
+        return records
+
+    try:
+        records = _exec_with_timeout(_do_query, timeout=BAOSTOCK_API_TIMEOUT)
+    except TimeoutError as e:
+        logging.getLogger('sync_adjust_factor').warning(f"  query_adjust_factor({bao_code}): {e}")
+        raise
+
+    time.sleep(RATE_LIMIT_DELAY)
     return records
 
 
 def fetch_dividend_data(bao_code: str, start_year: int, end_year: int) -> list:
     """获取指定年份范围的分红数据"""
-    records = []
-    for year in range(start_year, end_year + 1):
-        rs = bs.query_dividend_data(bao_code, year=str(year))
-        while rs.error_code == '0' and rs.next():
-            records.append(rs.get_row_data())
-        time.sleep(RATE_LIMIT_DELAY)
+
+    def _do_query():
+        records = []
+        for year in range(start_year, end_year + 1):
+            rs = bs.query_dividend_data(bao_code, year=str(year))
+            while rs.error_code == '0' and rs.next():
+                records.append(rs.get_row_data())
+            time.sleep(RATE_LIMIT_DELAY)
+        return records
+
+    try:
+        records = _exec_with_timeout(_do_query, timeout=BAOSTOCK_API_TIMEOUT * (end_year - start_year + 1))
+    except TimeoutError as e:
+        logging.getLogger('sync_adjust_factor').warning(f"  query_dividend_data({bao_code}): {e}")
+        raise
+
     return records
 
 
@@ -136,17 +177,15 @@ def get_all_listed_symbols(conn) -> list:
     return symbols
 
 
-def get_existing_records(conn, symbol: str, start_year: int, end_year: int) -> set:
-    """获取某只股票在指定年份范围内已有的 (trade_date, symbol) 集合"""
+def get_latest_trade_date(conn, symbol: str) -> date | None:
+    """获取某只股票在库中的最新复权因子日期"""
     cur = conn.cursor()
     cur.execute("""
-        SELECT trade_date FROM dwd_stock_adjust_factor
-        WHERE symbol = %s
-          AND EXTRACT(YEAR FROM trade_date) BETWEEN %s AND %s
-    """, (symbol, start_year, end_year))
-    existing = {row[0] for row in cur.fetchall()}
+        SELECT MAX(trade_date) FROM dwd_stock_adjust_factor WHERE symbol = %s
+    """, (symbol,))
+    row = cur.fetchone()
     cur.close()
-    return existing
+    return row[0] if row and row[0] else None
 
 
 def upsert_records(conn, records: list) -> int:
@@ -182,7 +221,7 @@ def upsert_records(conn, records: list) -> int:
     return written
 
 
-def main():
+def main(task_id: int = None):
     sys.stdout.reconfigure(line_buffering=True)
     sys.stderr.reconfigure(line_buffering=True)
 
@@ -195,10 +234,48 @@ def main():
     logger.info(f"  同步范围: {SYNC_START_YEAR} ~ {SYNC_END_YEAR}")
     logger.info("=" * 70)
 
+    conn = psycopg2.connect(**DB_CONFIG)
+
+    # 任务记录
+    job_id = task_id
+    if job_id is None:
+        from app.repositories.job_repository import JobRepository
+        from sqlalchemy import create_engine
+        engine = create_engine(
+            f"postgresql://{DB_CONFIG['user']}:{DB_CONFIG['password']}@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}"
+        )
+        from sqlalchemy.orm import Session
+        db = Session(bind=engine)
+        try:
+            repo = JobRepository(db)
+            job_id = repo.init_job_run("adjust_factor_sync", str(SYNC_END_YEAR))
+            logger.info(f"任务记录已创建 (job_id={job_id})")
+        except Exception:
+            logger.warning("创建任务记录失败")
+        finally:
+            db.close()
+            engine.dispose()
+
+    def _update_job(status, **kwargs):
+        if job_id and task_id is None:
+            from app.repositories.job_repository import JobRepository
+            from sqlalchemy import create_engine
+            from sqlalchemy.orm import Session
+            eng = create_engine(
+                f"postgresql://{DB_CONFIG['user']}:{DB_CONFIG['password']}@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}"
+            )
+            db = Session(bind=eng)
+            try:
+                JobRepository(db).update_job_run(job_id, status, **kwargs)
+            except Exception:
+                pass
+            finally:
+                db.close()
+                eng.dispose()
+
     bs.login()
 
     try:
-        conn = psycopg2.connect(**DB_CONFIG)
         symbols = get_all_listed_symbols(conn)
         total_stocks = len(symbols)
 
@@ -215,17 +292,26 @@ def main():
             bao_code = to_baostock_code(symbol)
 
             try:
-                # 1. 获取复权因子
-                adj_records = fetch_adjust_factor(bao_code, SYNC_START_YEAR, SYNC_END_YEAR)
+                # 增量检查：查该股票在库中最新复权因子日期
+                latest_date = get_latest_trade_date(conn, symbol)
+                end_date = datetime(SYNC_END_YEAR, 12, 31).date()
+                if latest_date and latest_date >= end_date:
+                    total_skipped += 1
+                    continue
+
+                # 只拉取缺失部分（latest_date 之后的数据）
+                query_start = (latest_date + timedelta(days=1)).strftime('%Y-%m-%d') if latest_date else f'{SYNC_START_YEAR}-01-01'
+                query_end = f'{SYNC_END_YEAR}-12-31'
+
+                # 1. 获取复权因子（只查缺失部分）
+                adj_records = fetch_adjust_factor_range(bao_code, query_start, query_end)
                 if not adj_records:
                     time.sleep(RATE_LIMIT_DELAY)
                     continue
 
                 # 构建 adj_factor 字典: trade_date -> adj_factor
                 adj_map = {}
-                adj_fields = ['code', 'dividOperateDate', 'foreAdjustFactor', 'backAdjustFactor', 'adjustFactor']
                 for row in adj_records:
-                    # 跳过 adj_factor 为空或无效的记录
                     try:
                         adj_val = parse_dividend_value(row[2])
                         if adj_val == 0:
@@ -238,8 +324,8 @@ def main():
                 if not adj_map:
                     continue
 
-                # 2. 获取分红数据（用于 event_type 判断）
-                div_records = fetch_dividend_data(bao_code, SYNC_START_YEAR, SYNC_END_YEAR)
+                # 2. 获取分红数据
+                div_records = fetch_dividend_data(bao_code, int(query_start[:4]), SYNC_END_YEAR)
                 div_fields = ['code', 'dividPreNoticeDate', 'dividAgmPumDate', 'dividPlanAnnounceDate',
                               'dividPlanDate', 'dividRegistDate', 'dividOperateDate', 'dividPayDate',
                               'dividStockMarketDate', 'dividCashPsBeforeTax', 'dividCashPsAfterTax',
@@ -309,15 +395,23 @@ def main():
         logger.info("-" * 70)
         logger.info(f"[同步完成] 总耗时: {elapsed:.1f}秒 ({elapsed/60:.1f}分钟)")
         logger.info(f"  总写入: {total_written} 条")
+        logger.info(f"  跳过（已有数据）: {total_skipped} 只")
         logger.info(f"  总错误: {total_errors} 条")
         logger.info("=" * 70)
+        _update_job("COMPLETED", rows_written=total_written)
 
     except Exception as e:
         logger.error(f"同步失败: {e}")
         import traceback
         logger.error(traceback.format_exc())
+        _update_job("FAILED", error_message=str(e))
     finally:
         bs.logout()
+        if job_id and task_id is None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 if __name__ == '__main__':

@@ -5,7 +5,6 @@ from pydantic import BaseModel
 from app.core.deps import get_db
 from app.core.response import success_response, error_response
 from app.services.board_service import BoardService
-from app.services.board_sync_service import BoardSyncService
 
 router = APIRouter(prefix="/boards", tags=["Boards"])
 
@@ -54,28 +53,32 @@ class SyncRequest(BaseModel):
 
 
 @router.post("/sync", summary="同步单只股票板块数据")
-def sync_board(symbol: str, db: Session = Depends(get_db)):
-    """
-    从 efinance 抓取单只股票的所属板块，写入 dwd_board_master + dwd_board_relation。
-    """
-    service = BoardSyncService(db)
-    result = service.sync_stock(symbol)
-    if not result["success"]:
-        return error_response(code=5001, message=f"同步失败: {result['error']}")
-    return success_response(result)
+def sync_board(symbol: str):
+    from app.core.config import settings
+    import httpx
+    try:
+        resp = httpx.post(
+            f"{settings.ETL_ENGINE_URL}/board-sync",
+            json={"symbol": symbol},
+            headers={"X-API-Key": settings.ETL_ENGINE_API_KEY},
+            timeout=30,
+        )
+        return success_response(resp.json().get("data", {}))
+    except httpx.RequestError as e:
+        return error_response(code=5001, message=f"同步失败: {e}")
 
 
 @router.post("/sync/batch", summary="批量同步股票板块数据")
-def sync_boards_batch(req: SyncRequest, db: Session = Depends(get_db)):
-    """
-    批量同步多只股票的板块数据。
-    body: {"symbols": ["600519", "000858"], "trade_date": "2026-05-03"}
-    """
-    from datetime import date
-    trade_date = None
-    if req.trade_date:
-        trade_date = date.fromisoformat(req.trade_date)
-
-    service = BoardSyncService(db)
-    results = service.batch_sync(req.symbols, trade_date)
-    return success_response({"results": results})
+def sync_boards_batch(req: SyncRequest):
+    from app.core.config import settings
+    import httpx
+    try:
+        resp = httpx.post(
+            f"{settings.ETL_ENGINE_URL}/board-sync-batch",
+            json={"symbols": req.symbols, "trade_date": req.trade_date},
+            headers={"X-API-Key": settings.ETL_ENGINE_API_KEY},
+            timeout=120,
+        )
+        return success_response(resp.json().get("data", {}))
+    except httpx.RequestError as e:
+        return error_response(code=5001, message=f"批量同步失败: {e}")

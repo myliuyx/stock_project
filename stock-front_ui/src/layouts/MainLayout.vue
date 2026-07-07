@@ -19,6 +19,7 @@ import {
   Filter,
   Download,
   Star,
+  TrendCharts,
 } from '@element-plus/icons-vue'
 import type { BoardItem } from '@/types/board'
 import type { JobItem } from '@/types/job'
@@ -106,6 +107,7 @@ function hasResults(): boolean {
 // ── 菜单 ─────────────────────────────────────────────
 const menuItems = [
   { path: '/dashboard', label: '首页', icon: HomeFilled },
+  { path: '/wendgu', label: '问股', icon: TrendCharts },
   { path: '/selection', label: '选股工作台', icon: DataAnalysis },
   { path: '/watchlist', label: '自选股', icon: Star },
   { path: '/boards', label: '板块分析', icon: PieChart },

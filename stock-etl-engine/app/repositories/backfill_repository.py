@@ -5,7 +5,7 @@ import logging
 from app.core.exceptions import BizException
 from app.utils.validation import validate_symbol
 
-logger = logging.getLogger("stock_api")
+logger = logging.getLogger("etl_engine.backfill_repository")
 
 
 class BackfillRepository:
@@ -106,3 +106,24 @@ class BackfillRepository:
             "created_at": m["created_at"].isoformat() if m["created_at"] else None,
             "updated_at": m["updated_at"].isoformat() if m["updated_at"] else None,
         }
+
+    def update_status(self, task_id: int, status: str, progress: int | None = None,
+                      rows_written: int | None = None, error_message: str | None = None):
+        """更新任务状态"""
+        updates = ["status = :status", "updated_at = NOW()"]
+        params = {"task_id": task_id, "status": status}
+        if progress is not None:
+            updates.append("progress = :progress")
+            params["progress"] = progress
+        if rows_written is not None:
+            updates.append("rows_written = :rows_written")
+            params["rows_written"] = rows_written
+        if error_message is not None:
+            updates.append("error_message = :error_message")
+            params["error_message"] = error_message
+
+        self.db.execute(
+            text(f"UPDATE etl_backfill_task SET {', '.join(updates)} WHERE id = :task_id"),
+            params,
+        )
+        self.db.commit()

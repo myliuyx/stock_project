@@ -152,21 +152,20 @@ def get_latest_trade_date(conn) -> str:
     return row[0].strftime('%Y-%m-%d') if row else datetime.now().strftime('%Y-%m-%d')
 
 
-def upsert_board_relation(conn, records: list, trade_date: str) -> int:
+def upsert_board_relation(conn, records: list) -> int:
     """批量 Upsert 股票-板块关系"""
     if not records:
         return 0
     cur = conn.cursor()
     sql = """
     INSERT INTO dwd_board_relation
-        (trade_date, symbol, board_code, board_type, relation_source, updated_at)
+        (symbol, board_code, board_type, relation_source, updated_at)
     VALUES %s
-    ON CONFLICT (trade_date, symbol, board_code) DO NOTHING
+    ON CONFLICT (symbol, board_code) DO NOTHING
     """
     now = datetime.now()
     values = [
         (
-            trade_date,
             r['symbol'],
             r['board_code'],
             'INDUSTRY',
@@ -244,7 +243,7 @@ def sync_board_relation() -> dict:
 
     conn = psycopg2.connect(**DB_CONFIG)
     try:
-        written = upsert_board_relation(conn, relations, trade_date)
+        written = upsert_board_relation(conn, relations)
         logger.info(f"【股票-板块关系同步】完成，写入 {written} 条记录（快照日期 {trade_date}）")
         return {"relations": written}
     finally:

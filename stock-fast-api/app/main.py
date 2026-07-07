@@ -39,13 +39,9 @@ from app.middleware.rate_limit import RateLimitMiddleware
 app.add_middleware(RateLimitMiddleware)
 
 # 注册路由
-from app.routers import auth, dashboard, selection, stocks, jobs, coverage, boards, backfill, system, watchlist
-
-# 注册定时任务
-from app.scheduler import create_scheduler
+from app.routers import auth, dashboard, selection, stocks, jobs, coverage, boards, backfill, system, watchlist, strategy
 
 
-# ─── 全局异常处理器 ────────────────────────────────────────────
 @app.exception_handler(BizException)
 async def biz_exception_handler(request: Request, exc: BizException):
     """
@@ -75,7 +71,6 @@ async def biz_exception_handler(request: Request, exc: BizException):
     )
 
 
-# ─── 注册路由 ──────────────────────────────────────────────────
 app.include_router(auth.router, prefix=settings.API_PREFIX)
 app.include_router(dashboard.router, prefix=settings.API_PREFIX)
 app.include_router(selection.router, prefix=settings.API_PREFIX)
@@ -86,30 +81,15 @@ app.include_router(boards.router, prefix=settings.API_PREFIX)
 app.include_router(backfill.router, prefix=settings.API_PREFIX)
 app.include_router(system.router, prefix=settings.API_PREFIX)
 app.include_router(watchlist.router, prefix=settings.API_PREFIX)
-
-
-# ─── 启动/关闭事件 ────────────────────────────────────────────
-scheduler = None
+app.include_router(strategy.router, prefix=settings.API_PREFIX)
 
 
 @app.on_event("startup")
 async def startup_event():
-    global scheduler
-    # 校验关键配置
     settings.validate()
-    scheduler = create_scheduler()
-    scheduler.start()
-    logger.info("🚀 应用已启动，定时任务调度器运行中")
+    logger.info("应用已启动")
 
 
-@app.on_event("shutdown")
-async def shutdown_event():
-    if scheduler:
-        scheduler.shutdown()
-        logger.info("🛑 应用已关闭，定时任务调度器已停止")
-
-
-# ─── 健康检查 ──────────────────────────────────────────────────
 @app.get("/", summary="健康检查")
 def health_check():
     return {"status": "ok", "app": settings.APP_NAME, "version": settings.APP_VERSION}

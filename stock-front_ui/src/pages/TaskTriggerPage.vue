@@ -21,30 +21,36 @@ const MANUAL_TASKS = [
     params: [] as { key: string; label: string; placeholder: string; default?: string }[],
   },
   {
-    jobName: 'sync_board_relation',
+    jobName: 'board_relation_full',
     label: '股票-板块关系同步',
-    description: '同步股票与板块的归属关系',
+    description: '全量同步股票与板块的归属关系（耗时较长）',
     params: [],
   },
   {
-    jobName: 'sync_financial',
+    jobName: 'financial_indicator_sync_v4',
     label: '财务指标同步',
-    description: '同步全市场股票财务指标',
+    description: '从 baostock 同步全市场股票最新财务数据（ROE、EPS 等）',
     params: [
       { key: 'year', label: '年份', placeholder: '2026', default: String(new Date().getFullYear()) },
       { key: 'quarter', label: '季度', placeholder: '1', default: String(Math.ceil((new Date().getMonth() + 1) / 3)) },
     ],
   },
   {
-    jobName: 'sync_adjust_factor',
+    jobName: 'adjust_factor_sync',
     label: '复权因子同步',
-    description: '同步全市场股票复权因子',
+    description: '从 baostock 同步全市场股票复权因子（前复权/后复权）',
     params: [
       { key: 'trade_date', label: '交易日期', placeholder: today, default: today },
     ],
   },
   {
-    jobName: 'sync_trade_calendar',
+    jobName: 'compute_factor',
+    label: '技术因子计算',
+    description: '计算均线、RSI、MACD、ATR 等技术分析指标',
+    params: [],
+  },
+  {
+    jobName: 'trade_calendar_sync',
     label: '交易日历同步',
     description: '同步交易日历（判断非交易日/节假日）',
     params: [],
@@ -54,9 +60,9 @@ const MANUAL_TASKS = [
 // 定时任务（可手动触发）
 const SCHEDULED_TASKS = [
   { jobName: 'security_master_sync', label: '股票主数据同步', time: '周一至周五 18:00' },
-  { jobName: 'daily_stock_sync', label: '日线行情同步', time: '周一至周五 19:00' },
-  { jobName: 'factor_compute', label: '技术因子计算', time: '周一至周五 20:30' },
-  { jobName: 'selection_mart', label: '选股宽表构建', time: '周一至周五 21:30' },
+  { jobName: 'daily_kline_sync', label: '日线行情同步', time: '周一至周五 19:00' },
+  { jobName: 'factor_compute', label: '技术因子计算', time: '周一至周五 22:30' },
+  { jobName: 'selection_mart', label: '选股宽表构建', time: '周一至周五 23:00' },
   { jobName: 'cleanup_logs', label: '日志清理', time: '每天 00:05' },
 ]
 

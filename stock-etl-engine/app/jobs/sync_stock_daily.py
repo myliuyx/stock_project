@@ -28,6 +28,9 @@ import time
 import logging
 import os
 import argparse
+import socket
+import threading
+import concurrent.futures
 from typing import List, Dict, Optional, Tuple
 
 # ========== 配置 ==========
@@ -49,22 +52,43 @@ SYNC_CONFIG = {
     'rate_limit_delay': 0.3,   # 请求间隔 0.3s
 }
 
+# ── Step2/Step3: 定时任务超时保护 + 进度告警配置 ──
+MAX_SYNC_HOURS = 4          # 最大执行时间（小时），超过则主动退出并保存 checkpoint
+PROGRESS_CHECK_INTERVAL = 500  # 每处理 N 只股票记录一次进度报告
+
+BAOSTOCK_QUERY_TIMEOUT = 30  # 每个 Baostock API 调用的超时时间（秒）
+
+
+_TIMEOUT_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+
+
+def run_with_timeout(func, timeout, *args, **kwargs):
+    """在线程中执行函数，超时则抛出 TimeoutError"""
+    future = _TIMEOUT_EXECUTOR.submit(func, *args, **kwargs)
+    try:
+        return future.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        raise TimeoutError(f"Function timed out after {timeout}s")
+
+
 # ========== 日期范围（默认从命令行参数覆盖）==========
 LOG_DIR = os.environ.get("SYNC_LOG_DIR", "/app/logs")
-LOG_FILE = os.path.join(LOG_DIR, f'sync_stock_daily_{datetime.now().strftime("%Y%m%d")}.log')
 
 # ========== 日志 ==========
 def setup_logging():
     os.makedirs(LOG_DIR, exist_ok=True)
+    log_file = os.path.join(LOG_DIR, f'sync_stock_daily_{datetime.now().strftime("%Y%m%d")}.log')
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.INFO)
-    if not logger.handlers:
-        fh = logging.FileHandler(LOG_FILE, encoding='utf-8')
-        fh.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
-        sh = logging.StreamHandler()
-        sh.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
-        logger.addHandler(fh)
-        logger.addHandler(sh)
+    logger.propagate = False
+    if logger.handlers:
+        logger.handlers.clear()
+    fh = logging.FileHandler(log_file, encoding='utf-8')
+    fh.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
+    sh = logging.StreamHandler()
+    sh.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
+    logger.addHandler(fh)
+    logger.addHandler(sh)
     return logger
 
 # ========== 数据库操作 ==========
@@ -281,42 +305,91 @@ def normalize_symbol(code: str) -> str:
     return code
 
 
+BAOSTOCK_SOCKET_TIMEOUT = 60  # Baostock API 调用超时（秒）
+BAOSTOCK_RECONNECT_THRESHOLD = 400  # Baostock API 调用次数超过此阈值后重新登录
+_baostock_api_calls = 0  # Baostock API 调用计数器
+_baostock_lock = threading.RLock()  # 保护 Baostock 连接的线程锁（可重入，避免嵌套死锁）
+
+
 def login_baostock():
-    lg = bs.login()
-    if lg.error_code != '0':
+    old_timeout = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(BAOSTOCK_SOCKET_TIMEOUT)
+    try:
+        lg = bs.login()
+        if lg.error_code != '0':
+            socket.setdefaulttimeout(old_timeout)
+            return False
+        return True
+    except Exception:
+        socket.setdefaulttimeout(old_timeout)
         return False
-    return True
 
 
 def logout_baostock():
     bs.logout()
+    socket.setdefaulttimeout(None)  # 恢复默认（无超时）
 
 
-def fetch_daily_kline(code: str, start_date: str, end_date: str, extend_days: int = 0) -> pd.DataFrame:
-    """获取日K线数据
-    
-    Args:
-        code: Baostock 股票代码
-        start_date: 起始日期 (YYYY-MM-DD)
-        end_date: 结束日期 (YYYY-MM-DD)
-        extend_days: 额外向前延伸的天数（用于获取历史数据计算 volume_ratio 等）
-    """
+def ensure_baostock_session():
+    global _baostock_api_calls
+    with _baostock_lock:
+        _baostock_api_calls += 1
+        if _baostock_api_calls > BAOSTOCK_RECONNECT_THRESHOLD:
+            logger = logging.getLogger(__name__)
+            logger.info(f"  🔄 Baostock API 已调用 {_baostock_api_calls} 次，重新登录保持连接")
+            try:
+                bs.logout()
+            except Exception:
+                pass
+            time.sleep(1)
+            socket.setdefaulttimeout(BAOSTOCK_SOCKET_TIMEOUT)
+            lg = bs.login()
+            if lg.error_code == '0':
+                logger.info("  ✅ Baostock 重新登录成功")
+            else:
+                logger.warning(f"  ⚠️ Baostock 重新登录失败: {lg.error_code}")
+            _baostock_api_calls = 0
+
+
+def _do_fetch_daily_kline(code, query_start, end_date):
+    """实际的 Baostock 日K线查询（供 run_with_timeout 调用）"""
+    with _baostock_lock:
+        ensure_baostock_session()
     fields = "date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg,isST"
-    
-    # 如果需要额外历史数据，往前推 extend_days 天
-    query_start = start_date
-    if extend_days > 0:
-        query_start = (datetime.strptime(start_date, '%Y-%m-%d') - timedelta(days=extend_days)).strftime('%Y-%m-%d')
-    
     rs = bs.query_history_k_data_plus(
         code=code, fields=fields,
         start_date=query_start, end_date=end_date,
         frequency="d", adjustflag="3"
     )
-    
     if rs.error_code != '0':
         return pd.DataFrame()
+    data_list = []
+    while rs.next():
+        data_list.append(rs.get_row_data())
+    return pd.DataFrame(data_list, columns=rs.fields) if data_list else pd.DataFrame()
+
+
+def fetch_daily_kline(code: str, start_date: str, end_date: str, extend_days: int = 0):
+    """获取日K线数据（带超时保护，超时返回 None）"""
+    query_start = start_date
+    if extend_days > 0:
+        query_start = (datetime.strptime(start_date, '%Y-%m-%d') - timedelta(days=extend_days)).strftime('%Y-%m-%d')
     
+    try:
+        return run_with_timeout(_do_fetch_daily_kline, BAOSTOCK_QUERY_TIMEOUT, code, query_start, end_date)
+    except TimeoutError:
+        logger = logging.getLogger(__name__)
+        logger.warning(f"  ⏰ 获取日K线超时 {code} ({BAOSTOCK_QUERY_TIMEOUT}s)")
+        return None
+
+
+def _do_fetch_adjust_factor(code, query_start, end_date):
+    """实际的 Baostock 复权因子查询（供 run_with_timeout 调用）"""
+    with _baostock_lock:
+        ensure_baostock_session()
+    rs = bs.query_adjust_factor(code=code, start_date=query_start, end_date=end_date)
+    if rs.error_code != '0':
+        return pd.DataFrame()
     data_list = []
     while rs.next():
         data_list.append(rs.get_row_data())
@@ -324,25 +397,14 @@ def fetch_daily_kline(code: str, start_date: str, end_date: str, extend_days: in
 
 
 def fetch_adjust_factor(code: str, start_date: str, end_date: str) -> pd.DataFrame:
-    """获取复权因子
-    
-    Args:
-        code: Baostock 股票代码 (如 'sh.600000')
-        start_date: 起始日期 (YYYY-MM-DD)，用于确定查询起点
-        end_date: 结束日期 (YYYY-MM-DD)
-    """
-    # 复权因子从上市日开始查询，确保不遗漏
-    # 但不早于 start_date 太多，取 start_date 前2年作为起点
+    """获取复权因子（带超时保护）"""
     query_start = (datetime.strptime(start_date, '%Y-%m-%d') - timedelta(days=730)).strftime('%Y-%m-%d')
-    rs = bs.query_adjust_factor(code=code, start_date=query_start, end_date=end_date)
-    
-    if rs.error_code != '0':
+    try:
+        return run_with_timeout(_do_fetch_adjust_factor, BAOSTOCK_QUERY_TIMEOUT, code, query_start, end_date)
+    except TimeoutError:
+        logger = logging.getLogger(__name__)
+        logger.warning(f"  ⏰ 获取复权因子超时 {code} ({BAOSTOCK_QUERY_TIMEOUT}s)")
         return pd.DataFrame()
-    
-    data_list = []
-    while rs.next():
-        data_list.append(rs.get_row_data())
-    return pd.DataFrame(data_list, columns=rs.fields) if data_list else pd.DataFrame()
 
 
 def safe_float(val):
@@ -415,8 +477,8 @@ def fetch_financial_from_db(conn, symbol: str) -> Dict:
     return result if result else {}
 
 
-def fetch_financial_from_baostock(baostock_code: str) -> Dict:
-    """从 Baostock 获取股票最新财务数据（本地没有时的 fallback）"""
+def _do_fetch_financial_from_baostock(baostock_code: str) -> Dict:
+    """实际的 Baostock 财务数据查询（供 run_with_timeout 调用）"""
     eps_ttm = total_share = liqa_share = roe_avg = mb_revenue = None
     
     year = datetime.now().year - 1
@@ -427,6 +489,8 @@ def fetch_financial_from_baostock(baostock_code: str) -> Dict:
                 if q == "4" or (q == "3" and m < 10) or (q == "2" and m < 7) or (q == "1" and m < 4):
                     continue
             try:
+                with _baostock_lock:
+                    ensure_baostock_session()
                 rs = bs.query_profit_data(code=baostock_code, year=y, quarter=q)
                 if rs.error_code != '0':
                     continue
@@ -462,6 +526,16 @@ def fetch_financial_from_baostock(baostock_code: str) -> Dict:
         'totalShare': total_share,
         'liqaShare': liqa_share,
     }
+
+
+def fetch_financial_from_baostock(baostock_code: str):
+    """从 Baostock 获取股票最新财务数据（带超时保护，超时返回 None）"""
+    try:
+        return run_with_timeout(_do_fetch_financial_from_baostock, BAOSTOCK_QUERY_TIMEOUT, baostock_code)
+    except TimeoutError:
+        logger = logging.getLogger(__name__)
+        logger.warning(f"  ⏰ 获取财务数据超时 {baostock_code} ({BAOSTOCK_QUERY_TIMEOUT}s)")
+        return None
 
 
 # ========== 数据处理 ==========
@@ -574,16 +648,24 @@ def process_single_stock(
     total_share: float = None, 
     liqa_share: float = None,
     roe_avg: float = None,
-    mb_revenue: float = None
-) -> List[Dict]:
-    """处理单只股票"""
+    mb_revenue: float = None,
+    cached_adj_factor: float = None
+):
+    """处理单只股票（超时返回 None，空数据返回 []，成功返回 List[Dict]）"""
     try:
         daily_df = fetch_daily_kline(code, start_date, end_date, extend_days=0)
+        if daily_df is None:
+            return None  # 超时标记
         if daily_df.empty:
             return []
         
-        adj_df = fetch_adjust_factor(code, start_date, end_date)
-        result_df = calculate_derived_fields(daily_df, adj_df, eps_ttm, total_share, liqa_share, roe_avg, mb_revenue)
+        if cached_adj_factor is not None:
+            adj_df = pd.DataFrame()
+            result_df = calculate_derived_fields(daily_df, adj_df, eps_ttm, total_share, liqa_share, roe_avg, mb_revenue)
+            result_df['adj_factor'] = cached_adj_factor
+        else:
+            adj_df = fetch_adjust_factor(code, start_date, end_date)
+            result_df = calculate_derived_fields(daily_df, adj_df, eps_ttm, total_share, liqa_share, roe_avg, mb_revenue)
         
         # 只保留目标日期范围内的数据（去掉延伸的历史部分）
         start_dt = pd.to_datetime(start_date)
@@ -707,7 +789,7 @@ def update_volume_ratio(conn, trade_date: str, batch_symbols: list):
 
 
 # ========== 主同步函数 ==========
-def sync_stock_daily(force_restart: bool = False, start_date: str = None, end_date: str = None, target_symbol: str = None):
+def sync_stock_daily(force_restart: bool = False, start_date: str = None, end_date: str = None, target_symbol: str = None, task_id: int = None):
     """日线行情同步 (支持断点续传、指定日期范围)
     
     Args:
@@ -726,7 +808,9 @@ def sync_stock_daily(force_restart: bool = False, start_date: str = None, end_da
         job_name = SYNC_CONFIG['job_name']
 
     biz_date = end_date or datetime.now().strftime('%Y-%m-%d')
-    start_time = datetime.now()  # 记录开始时间，用于计算总耗时
+    start_time_dt = datetime.now()  # 记录开始时间（用于日志展示）
+    start_ts = time.time()          # 记录开始时间戳（用于超时检查 + 进度计算）
+    max_sync_seconds = MAX_SYNC_HOURS * 3600  # 最大执行秒数（4h）
     job_id = None  # 任务 ID，初始化为 None，避免 except 块中未定义
     
     logger.info("="*60)
@@ -742,10 +826,15 @@ def sync_stock_daily(force_restart: bool = False, start_date: str = None, end_da
     try:
         conn = get_db_connection()
         
-        # 创建任务记录
-        job_id = init_job_run(conn, job_name, biz_date)
-        add_job_log(conn, job_id, "INFO", f"任务记录已创建，job_name={job_name}, biz_date={biz_date}")
-        logger.info(f"✅ 任务记录已创建 (job_id={job_id})")
+        # 创建任务记录 (有 task_id 时使用外部传入的，避免重复创建)
+        if task_id is not None:
+            job_id = task_id
+            add_job_log(conn, job_id, "INFO", f"使用外部 job_id={job_id}，跳过 init_job_run")
+            logger.info(f"✅ 使用外部 job_id={job_id}")
+        else:
+            job_id = init_job_run(conn, job_name, biz_date)
+            add_job_log(conn, job_id, "INFO", f"任务记录已创建，job_name={job_name}, biz_date={biz_date}")
+            logger.info(f"✅ 任务记录已创建 (job_id={job_id})")
         
         # ========== 检查断点 ==========
         start_index = 0
@@ -797,6 +886,7 @@ def sync_stock_daily(force_restart: bool = False, start_date: str = None, end_da
         
         if start_index >= total_stocks:
             logger.info("✅ 所有股票已处理完成，无需重复同步")
+            update_job_run(conn, job_id, status='COMPLETED', rows_raw=0, rows_written=0)
             conn.close()
             return
         
@@ -817,14 +907,36 @@ def sync_stock_daily(force_restart: bool = False, start_date: str = None, end_da
         all_symbols = [normalize_symbol(f"{str(s['exchange']).lower()}.{str(s['ticker']).zfill(6)}") for _, s in stocks_df.iterrows()]
         stock_date_map = batch_get_stock_date_range(conn, all_symbols)
         logger.info(f"📊 批量查询 {len(stock_date_map)} 只股票的日期范围完成")
-        
         # ========== 处理每批股票 ==========
         batch_count = 0
+        _consecutive_timeout = 0  # 连续超时计数，用于触发 Baostock 重连
         for i in range(start_index, total_stocks, SYNC_CONFIG['batch_size']):
             batch = stocks_df.iloc[i:i+SYNC_CONFIG['batch_size']]
             batch_num = (i // SYNC_CONFIG['batch_size']) + 1
             total_batches = (total_stocks + SYNC_CONFIG['batch_size'] - 1) // SYNC_CONFIG['batch_size']
-            
+
+            # ── Step2: 超时检查 — 运行超过 MAX_SYNC_HOURS 主动退出，保存 checkpoint ──
+            elapsed = time.time() - start_ts
+            if elapsed > max_sync_seconds and i > start_index:
+                logger.warning(f"\n⚠️ 已达到最大执行时间 {MAX_SYNC_HOURS}h ({elapsed/3600:.1f}h)，停止同步")
+                add_job_log(conn, job_id, "WARN", f"达到最大执行时间 {MAX_SYNC_HOURS}h，主动退出 (已处理={total_processed})")
+                # 保存最终 checkpoint
+                save_checkpoint(conn, job_name, i - SYNC_CONFIG['batch_size'], '',
+                              total_processed, stocks_success, stocks_skipped, stocks_failed, biz_date)
+                update_job_run(conn, job_id, status='COMPLETED', rows_raw=total_processed, rows_written=stocks_success)
+                add_job_log(conn, job_id, "INFO", f"因超时主动退出，已处理 {total_processed} 只 (成功={stocks_success})")
+                break
+
+            # ── Step3: 进度报告 — 每 PROGRESS_CHECK_INTERVAL 只记录一次 ──
+            if total_processed > 0 and total_processed % PROGRESS_CHECK_INTERVAL == 0:
+                elapsed_min = elapsed / 60
+                rate = total_processed / max(elapsed_min, 1)
+                logger.info(f"📊 进度报告: {total_processed}/{total_stocks} ({total_processed*100//max(total_stocks,1)}%), "
+                            f"速率={rate:.1f}只/分钟, 已用={elapsed_min:.0f}min")
+                # 如果速率异常低，记录告警（Baostock 可能不稳定）
+                if rate < 2:
+                    logger.warning(f"⚠️ 同步速率异常低: {rate:.1f}只/分钟 — 请检查 Baostock API 状态")
+
             logger.info(f"\n批次 {batch_num}/{total_batches} (股票 {i+1}~{min(i+SYNC_CONFIG['batch_size'], total_stocks)}/{total_stocks})")
             add_job_log(conn, job_id, "INFO", f"批次 {batch_num}/{total_batches} 开始处理")
             
@@ -922,34 +1034,58 @@ def sync_stock_daily(force_restart: bool = False, start_date: str = None, end_da
                         liqa_share = fin_data.get('liqaShare')
                     else:
                         fin_data = fetch_financial_from_baostock(baostock_code)
-                        eps_ttm = fin_data.get('epsTTM')
-                        roe_avg = fin_data.get('roeAvg')
-                        mb_revenue = fin_data.get('MBRevenue')
-                        total_share = fin_data.get('totalShare')
-                        liqa_share = fin_data.get('liqaShare')
-                        logger.info(f"  📊 {ticker} 从 Baostock 获取财务数据: eps={eps_ttm}, roe={roe_avg}, revenue={mb_revenue}")
+                        if fin_data is not None:
+                            eps_ttm = fin_data.get('epsTTM')
+                            roe_avg = fin_data.get('roeAvg')
+                            mb_revenue = fin_data.get('MBRevenue')
+                            total_share = fin_data.get('totalShare')
+                            liqa_share = fin_data.get('liqaShare')
+                            logger.info(f"  📊 {ticker} 从 Baostock 获取财务数据: eps={eps_ttm}, roe={roe_avg}, revenue={mb_revenue}")
                 except Exception as e:
                     logger.warning(f"  ⚠️ 获取财务数据失败 {ticker}，本次日线数据将无财务指标: {e}")
                 
                 # 获取日K线（只拉缺失的日期范围）
-                stock_data = process_single_stock(baostock_code, fetch_start_date, end_date_str, eps_ttm, total_share, liqa_share, roe_avg, mb_revenue)
+                stock_data = process_single_stock(baostock_code, fetch_start_date, end_date_str, eps_ttm, total_share, liqa_share, roe_avg, mb_revenue, None)
                 if stock_data:
                     logger.info(f"  -> {ticker} 获取 {len(stock_data)} 条数据")
-
-                # 判断成功/失败：增量同步（缺少数天）且 baostock 返回空 → 可能是周末/节假日，不算失败
+                
+                # 判断成功/失败
                 days_needed = (datetime.strptime(end_date_str, '%Y-%m-%d') - datetime.strptime(fetch_start_date, '%Y-%m-%d')).days
                 is_incremental_short = (days_needed <= 5) and (max_date_in_db is not None)
                 
-                if stock_data:
+                if stock_data is None:
+                    _consecutive_timeout += 1
+                    batch_fail += 1
+                    stocks_failed += 1
+                    logger.warning(f"  ❌ {ticker} Baostock 超时({_consecutive_timeout}次连续)，标记为失败")
+                    if _consecutive_timeout >= 3:
+                        logger.warning(f"  🔄 连续 {_consecutive_timeout} 只超时，强制重新登录 Baostock")
+                        try:
+                            bs.logout()
+                        except Exception:
+                            pass
+                        time.sleep(3)
+                        socket.setdefaulttimeout(BAOSTOCK_SOCKET_TIMEOUT)
+                        lg = bs.login()
+                        if lg.error_code == '0':
+                            logger.info("  ✅ Baostock 重新登录成功")
+                        else:
+                            logger.warning(f"  ⚠️ Baostock 重新登录失败: {lg.error_code}")
+                        _consecutive_timeout = 0
+                        with _baostock_lock:
+                            _baostock_api_calls = 0
+                elif stock_data:
+                    _consecutive_timeout = 0
                     batch_data.extend(stock_data)
                     batch_success += 1
                     stocks_success += 1
                 elif is_incremental_short:
-                    # 增量拉取仅缺几天且 baostock 返回空：周末/节假日无交易，视为跳过
+                    _consecutive_timeout = 0
                     batch_skipped += 1
                     stocks_skipped += 1
                     logger.info(f"  ⏭️ {ticker} 增量拉取无新数据（{fetch_start_date}~{end_date_str}，疑似周末/节假日），跳过")
                 else:
+                    _consecutive_timeout = 0
                     batch_fail += 1
                     stocks_failed += 1
                 
@@ -996,7 +1132,13 @@ def sync_stock_daily(force_restart: bool = False, start_date: str = None, end_da
         conn.close()
         conn = None  # 避免 finally 块重复关闭
         
-        elapsed = (datetime.now() - start_time).total_seconds()
+        # ── Step3: 最终进度报告 ──
+        elapsed_min = (time.time() - start_ts) / 60
+        rate = total_processed / max(elapsed_min, 1) if elapsed_min > 0 else float('inf')
+        logger.info(f"📊 最终进度报告: {total_processed}/{total_stocks} ({'100' if stocks_success + stocks_skipped + stocks_failed >= total_stocks else total_processed*100//max(total_stocks,1)}%), "
+                    f"速率={rate:.1f}只/分钟, 总用时={elapsed_min:.0f}min")
+
+        elapsed = (datetime.now() - start_time_dt).total_seconds()
         logger.info("\n" + "="*60)
         logger.info(f"✅ 同步完成!")
         logger.info(f"总耗时: {elapsed:.1f}秒 ({elapsed/60:.1f}分钟)")

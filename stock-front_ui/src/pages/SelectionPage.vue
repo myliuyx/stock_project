@@ -1,15 +1,19 @@
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { ElSelect, ElOption, ElButton, ElTable, ElTableColumn, ElPagination, ElTag, ElMessage } from 'element-plus'
+import { ref, onMounted, computed } from 'vue'
+import { ElSelect, ElOption, ElButton, ElTable, ElTableColumn, ElPagination, ElTag, ElMessage, ElRadioGroup, ElRadioButton, ElEmpty } from 'element-plus'
 import { Download } from '@element-plus/icons-vue'
 import { selectionApi } from '@/api/selection'
+import { strategyApi } from '@/api/strategy'
 import type { SelectionItem, SelectionFilters } from '@/types/selection'
+import type { StrategyStockItem, Strategy } from '@/types/strategy'
 import { formatPercent } from '@/utils/format'
 import { useRouter } from 'vue-router'
 import FilterPanel from '@/components/selection/FilterPanel.vue'
+import StrategySelector from '@/components/strategy/StrategySelector.vue'
 
 const router = useRouter()
+const mode = ref<'filter' | 'strategy'>('filter')
 const tradeDates = ref<string[]>([])
 const industries = ref<string[]>([])
 const selectedDate = ref('')
@@ -19,6 +23,11 @@ const page = ref(1)
 const pageSize = ref(50)
 const loading = ref(false)
 const excludeSt = ref(false)
+
+// 策略相关
+const selectedStrategy = ref('')
+const strategyResult = ref<{ strategy: Strategy; items: StrategyStockItem[]; total: number } | null>(null)
+const strategyLoading = ref(false)
 
 // 当前排序列和方向
 const sortBy = ref<string>('trend_score')
@@ -100,6 +109,25 @@ async function fetchData() {
   }
 }
 
+async function fetchStrategyData() {
+  if (!selectedDate.value || !selectedStrategy.value) return
+  strategyLoading.value = true
+  try {
+    const res = await strategyApi.queryStrategy({
+      strategy_id: selectedStrategy.value,
+      trade_date: selectedDate.value,
+      limit: pageSize.value,
+      page: page.value,
+    })
+    strategyResult.value = res.data ?? null
+    total.value = strategyResult.value?.total ?? 0
+  } catch {
+    ElMessage.error('策略查询失败，请重试')
+  } finally {
+    strategyLoading.value = false
+  }
+}
+
 const handleSearch = () => {
   page.value = 1
   // excludeSt=true → 只要非ST → is_st=false；excludeSt=false → 不过滤 → is_st=undefined
@@ -110,6 +138,11 @@ const handleSearch = () => {
 const handlePageChange = (p: number) => {
   page.value = p
   fetchData()
+}
+
+const handlePageChangeStrategy = (p: number) => {
+  page.value = p
+  fetchStrategyData()
 }
 
 const handleReset = () => {
@@ -125,6 +158,23 @@ const handleReset = () => {
   sortOrder.value = 'desc'
   page.value = 1
   fetchData()
+}
+
+const handleModeChange = (newMode: string | number | boolean | undefined) => {
+  if (!newMode) return
+  mode.value = newMode as 'filter' | 'strategy'
+  page.value = 1
+  if (mode.value === 'filter') {
+    strategyResult.value = null
+    fetchData()
+  } else if (selectedStrategy.value) {
+    fetchStrategyData()
+  }
+}
+
+const handleStrategyChange = (strategyId: string) => {
+  page.value = 1
+  if (strategyId) fetchStrategyData()
 }
 
 /** 点击列头排序 */
@@ -147,14 +197,47 @@ const goToStockDetail = (symbol: string) => {
       </div>
     </div>
 
-    <!-- 筛选条件 -->
+    <!-- 模式切换 + 策略选择 -->
+    <div class="mode-bar">
+      <el-radio-group v-model="mode" size="default" @change="handleModeChange">
+        <el-radio-button value="filter">筛选模式</el-radio-button>
+        <el-radio-button value="strategy">策略模式</el-radio-button>
+      </el-radio-group>
+
+      <div v-if="mode === 'strategy'" class="mode-bar__strategy">
+        <StrategySelector
+          v-model="selectedStrategy"
+          :trade-date="selectedDate"
+          :trade-dates="tradeDates"
+          @change="handleStrategyChange"
+        />
+        <el-button
+          v-if="selectedStrategy"
+          type="primary"
+          size="default"
+          :loading="strategyLoading"
+          @click="fetchStrategyData"
+        >
+          执行策略
+        </el-button>
+      </div>
+    </div>
+
+    <!-- 筛选条件（仅筛选模式显示） -->
     <FilterPanel
+      v-if="mode === 'filter'"
       v-model:filters="filters"
       v-model:trade-date="selectedDate"
       :trade-dates="tradeDates"
       :industries="industries"
       @search="handleSearch"
     />
+
+    <!-- 策略结果表格 -->
+    <div v-if="mode === 'strategy' && strategyResult" class="strategy-info-bar">
+      <span class="strategy-info-bar__name">{{ strategyResult.strategy.name }}</span>
+      <span class="strategy-info-bar__desc">{{ strategyResult.strategy.description }}</span>
+    </div>
 
     <!-- 结果表格 -->
     <div class="page-card result-card">
@@ -167,7 +250,9 @@ const goToStockDetail = (symbol: string) => {
         </el-button>
       </div>
 
+      <!-- 筛选模式表格 -->
       <el-table
+        v-if="mode === 'filter'"
         border
         style="width: 100%; table-layout: fixed"
         :data="tableData"
@@ -222,6 +307,67 @@ const goToStockDetail = (symbol: string) => {
         </el-table-column>
       </el-table>
 
+      <!-- 策略模式表格 -->
+      <el-table
+        v-if="mode === 'strategy' && strategyResult"
+        border
+        style="width: 100%; table-layout: fixed"
+        :data="strategyResult.items"
+        stripe
+        :loading="strategyLoading"
+        row-class-name="clickable-row"
+        @row-click="(row) => goToStockDetail(row.symbol)"
+      >
+        <el-table-column prop="symbol" label="代码" width="110" />
+        <el-table-column prop="name" label="名称" min-width="120" show-overflow-tooltip />
+        <el-table-column prop="exchange" label="交易所" width="70">
+          <template #default="{ row }">{{ row.exchange === 'SH' ? '上交所' : '深交所' }}</template>
+        </el-table-column>
+        <el-table-column prop="close" label="收盘价" width="100" align="right">
+          <template #default="{ row }">{{ row.close?.toFixed(2) ?? '-' }}</template>
+        </el-table-column>
+        <el-table-column prop="change_pct" label="涨跌幅" width="100" align="right">
+          <template #default="{ row }">
+            <span :class="row.change_pct > 0 ? 'text-rise' : row.change_pct < 0 ? 'text-fall' : 'text-flat'">
+              {{ formatPercent(row.change_pct) }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="turnover_rate" label="换手率" width="90" align="right">
+          <template #default="{ row }">{{ formatPercent(row.turnover_rate) }}</template>
+        </el-table-column>
+        <el-table-column prop="score" label="策略评分" width="100" align="right">
+          <template #default="{ row }">
+            <el-tag v-if="row.score >= 80" type="success" size="small" effect="plain">{{ row.score }}</el-tag>
+            <el-tag v-else-if="row.score >= 60" type="warning" size="small" effect="plain">{{ row.score }}</el-tag>
+            <span v-else>{{ row.score }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="match_reason" label="匹配原因" min-width="200" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.match_reason }}</template>
+        </el-table-column>
+        <el-table-column label="信号" width="180">
+          <template #default="{ row }">
+            <div style="display: flex; flex-wrap: wrap; gap: 2px;">
+              <el-tag
+                v-for="sig in row.signals"
+                :key="sig.name"
+                size="small"
+                effect="plain"
+              >
+                {{ sig.name }}:{{ sig.value }}
+              </el-tag>
+            </div>
+          </template>
+        </el-table-column>
+      </el-table>
+
+      <!-- 策略模式空状态 -->
+      <el-empty
+        v-if="mode === 'strategy' && !strategyResult && !strategyLoading"
+        description="请先选择策略，然后点击「执行策略」"
+      />
+
       <!-- 分页 -->
       <div class="pagination-wrap">
         <el-pagination
@@ -230,8 +376,8 @@ const goToStockDetail = (symbol: string) => {
           :page-sizes="[20, 50, 100]"
           :total="total"
           layout="total, sizes, prev, pager, next"
-          @current-change="handlePageChange"
-          @size-change="() => { page = 1; fetchData() }"
+          @current-change="mode === 'filter' ? handlePageChange(page) : handlePageChangeStrategy(page)"
+          @size-change="mode === 'filter' ? (() => { page = 1; fetchData() })() : (() => { page = 1; fetchStrategyData() })()"
         />
       </div>
     </div>
@@ -327,6 +473,44 @@ const goToStockDetail = (symbol: string) => {
 /* ── 行可点击 ─────────────────────────────────────────── */
 .clickable-row {
   cursor: pointer;
+}
+
+/* ── 模式切换栏 ─────────────────────────────────────────── */
+.mode-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+  background: var(--el-fill-color-light);
+  border-radius: 8px;
+}
+
+.mode-bar__strategy {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ── 策略信息栏 ─────────────────────────────────────────── */
+.strategy-info-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  margin-bottom: 8px;
+  background: var(--el-color-success-light-9);
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.strategy-info-bar__name {
+  font-weight: 600;
+  color: var(--el-color-success);
+}
+
+.strategy-info-bar__desc {
+  color: var(--el-color-info);
 }
 
 </style>

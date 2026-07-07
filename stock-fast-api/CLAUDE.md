@@ -51,12 +51,11 @@ Core 层     →  配置 / 数据库连接 / 异常 / 响应封装      (core/)
 
 | 文件 | 用途 |
 |------|------|
-| `app/main.py` | 启动入口，路由注册，全局异常处理，定时任务调度器 |
+| `app/main.py` | 启动入口，路由注册，全局异常处理 |
 | `app/core/config.py` | 配置管理（数据库、JWT） |
 | `app/core/deps.py` | 依赖注入（get_db, get_current_user） |
 | `app/core/exceptions.py` | 业务异常类（BizException, NotFoundException） |
 | `app/core/response.py` | 统一响应封装 |
-| `app/scheduler.py` | 定时任务调度器 |
 
 ## 数据库表（实测状态）
 
@@ -87,12 +86,17 @@ Core 层     →  配置 / 数据库连接 / 异常 / 响应封装      (core/)
 | dashboard | `/api/v1/dashboard` | 仪表盘 |
 | selection | `/api/v1/selection` | 选股 |
 | stocks | `/api/v1/stocks` | 股票行情 |
+| strategy | `/api/v1/strategies` | 策略管理 & 问股分析 |
 | jobs | `/api/v1/jobs` | ETL 任务 |
 | coverage | `/api/v1/coverage` | 数据覆盖 |
 | boards | `/api/v1/boards` | 板块 |
 | backfill | `/api/v1/backfill` | 回填 |
 | system | `/api/v1/system` | 系统 |
 | watchlist | `/api/v1/watchlist` | 自选股 |
+
+## Middleware
+
+- `app/middleware/` — Request/response middleware (CORS, logging, etc.)
 
 ## 开发流程
 

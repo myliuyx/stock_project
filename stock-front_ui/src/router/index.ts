@@ -1,5 +1,19 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import type { RouteRecordRaw } from 'vue-router'
+import type { RouteLocationNormalized, RouteRecordRaw } from 'vue-router'
+import { jwtDecode, type JwtPayload } from 'jwt-decode'
+import { ElMessage } from 'element-plus'
+
+function isTokenExpired(token: string): boolean {
+  try {
+    const decoded = jwtDecode(token) as JwtPayload & { exp?: number }
+    if (!decoded.exp) return false // no expiry claim → trust it
+    const now = Date.now() / 1000
+    // Add 30s buffer to preemptively redirect before actual expiry
+    return decoded.exp < now + 30
+  } catch {
+    return true // invalid token format → treat as expired
+  }
+}
 
 const routes: RouteRecordRaw[] = [
   {
@@ -16,6 +30,12 @@ const routes: RouteRecordRaw[] = [
     name: 'Dashboard',
     component: () => import('@/pages/DashboardPage.vue'),
     meta: { title: '数据平台控制台' },
+  },
+  {
+    path: '/wendgu',
+    name: 'Wendgu',
+    component: () => import('@/pages/WendguPage.vue'),
+    meta: { title: '问股' },
   },
   {
     path: '/selection',
@@ -95,18 +115,27 @@ const router = createRouter({
   routes,
 })
 
-// 路由守卫：登录校验
-router.beforeEach(async (to) => {
+// 路由守卫：登录校验 + Token 过期检测
+router.beforeEach(async (to: RouteLocationNormalized, _from: RouteLocationNormalized) => {
   const token = localStorage.getItem('token')
+
   // 白名单：登录页可直接访问
   if (to.path === '/login') {
     return true
   }
-  // 其他页面需要登录态
-  if (!token) {
+
+  // 其他页面需要有效登录态
+  const expired = token ? isTokenExpired(token) : false
+  if (!token || expired) {
+    // 清理过期 token 及相关状态
+    localStorage.removeItem('token')
+    localStorage.removeItem('tokenVerified')
+    if (expired) {
+      ElMessage?.warning('登录已过期，请重新登录') as any
+    }
     return '/login'
   }
-  // tokenVerified 已在 login 时设为 true，跳过重复验证
+
   return true
 })
 

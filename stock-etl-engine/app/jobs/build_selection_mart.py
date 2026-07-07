@@ -72,6 +72,7 @@ WEIGHT_CHANGE_PCT = 0.10
 
 
 def setup_logging():
+    global logger
     os.makedirs(LOG_DIR, exist_ok=True)
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.INFO)
@@ -183,14 +184,13 @@ def get_selection_data(conn, trade_date: str) -> pd.DataFrame:
             ORDER BY symbol, report_period DESC
         ),
         board_info AS (
-            -- 取每只股票最新日期的板块信息
+            -- 取每只股票最新的板块信息（无trade_date字段，取最新记录）
             SELECT DISTINCT ON (symbol)
                 symbol,
                 board_code,
                 board_type
             FROM dwd_board_relation
-            WHERE trade_date <= %s
-            ORDER BY symbol, trade_date DESC
+            ORDER BY symbol, updated_at DESC
         )
         SELECT
             d.symbol,
@@ -248,7 +248,7 @@ def get_selection_data(conn, trade_date: str) -> pd.DataFrame:
         ORDER BY d.symbol
     """
 
-    df = pd.read_sql(query, conn, params=(trade_date, trade_date, trade_date))
+    df = pd.read_sql(query, conn, params=(trade_date, trade_date))
     return df
 
 
@@ -264,8 +264,7 @@ def build_board_names(conn, symbols: list, trade_date: str) -> dict:
                 board_code,
                 board_type
             FROM dwd_board_relation
-            WHERE trade_date <= %s
-            ORDER BY symbol, board_code, trade_date DESC
+            ORDER BY symbol, board_code, updated_at DESC
         )
         SELECT lb.symbol, lb.board_code, bm.board_name
         FROM latest_boards lb
@@ -274,7 +273,7 @@ def build_board_names(conn, symbols: list, trade_date: str) -> dict:
     """
 
     cursor = conn.cursor()
-    cursor.execute(query, (trade_date, symbols))
+    cursor.execute(query, (symbols,))
     rows = cursor.fetchall()
     cursor.close()
 
@@ -428,7 +427,7 @@ def main():
     parser.add_argument('--start-date', type=str, help='起始日期 YYYY-MM-DD')
     parser.add_argument('--end-date', type=str, help='结束日期 YYYY-MM-DD')
     parser.add_argument('--full', action='store_true', help='全量重算')
-    args = parser.parse_args()
+    args, _ = parser.parse_known_args()
 
     # 确定日期范围
     if args.full:

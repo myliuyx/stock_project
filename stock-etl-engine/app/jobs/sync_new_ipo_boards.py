@@ -92,6 +92,47 @@ def setup_logging():
     return logging.getLogger('sync_new_ipo_boards')
 
 
+# ========== 任务状态管理（etl_job_run）==========
+def init_job_run(conn, biz_date: str = None) -> int:
+    """创建任务记录，返回 job_id"""
+    cursor = conn.cursor()
+    now = datetime.now()
+    cursor.execute("""
+        INSERT INTO etl_job_run (job_name, biz_date, status, start_time, rows_raw, rows_written, created_at)
+        VALUES (%s, %s, 'RUNNING', %s, 0, 0, %s)
+        RETURNING id
+    """, ('new_ipo_board_sync', biz_date or now.strftime('%Y-%m-%d'), now, now))
+    job_id = cursor.fetchone()[0]
+    conn.commit()
+    cursor.close()
+    return job_id
+
+
+def update_job_status(conn, job_id: int, status: str, rows_written: int = 0, error_message: str = None):
+    """更新任务状态"""
+    cur = conn.cursor()
+    updates = ["status = %s", "end_time = NOW()", "rows_written = %s"]
+    params = [status, rows_written]
+
+    if status == 'COMPLETED':
+        # 计算 duration（start_time -> end_time）需要子查询，直接设 duration_ms
+        cur.execute("SELECT EXTRACT(EPOCH FROM (NOW() - start_time))::bigint * 1000 FROM etl_job_run WHERE id = %s", (job_id,))
+        row = cur.fetchone()
+        if row and row[0] is not None:
+            updates.append("duration_ms = %s")
+            params.append(row[0])
+
+    if error_message:
+        updates.append("error_message = %s")
+        params.append(error_message)
+
+    sql = f"UPDATE etl_job_run SET {', '.join(updates)} WHERE id = %s"
+    params.append(job_id)
+    cur.execute(sql, tuple(params))
+    conn.commit()
+    cur.close()
+
+
 # ========== 数据获取 ==========
 def get_new_ipo_symbols(conn, days: int = 7) -> list:
     """查询最近 days 天内上市的新股"""
@@ -99,7 +140,7 @@ def get_new_ipo_symbols(conn, days: int = 7) -> list:
     cur.execute("""
         SELECT symbol, name, list_date
         FROM dwd_security_master
-        WHERE list_date >= CURRENT_DATE - INTERVAL '1 days' * :days
+        WHERE list_date >= CURRENT_DATE - (%(days)s || ' days')::interval
           AND status = 'LISTED'
         ORDER BY list_date DESC
     """, {'days': days})
@@ -189,53 +230,80 @@ def upsert_board_relation(conn, symbol: str, records: list) -> int:
 # ========== 主逻辑 ==========
 def sync_new_ipo_boards(days: int = 7) -> dict:
     logger = setup_logging()
-    logger.info(f"【新股板块增量同步】开始（近 {days} 天）")
+    now = datetime.now()
 
+    # Step 1: 创建任务记录（status=RUNNING）
     conn = psycopg2.connect(**DB_CONFIG)
+    job_id = init_job_run(conn, biz_date=now.strftime('%Y-%m-%d'))
+    logger.info(f"【新股板块增量同步】开始（近 {days} 天，job_id={job_id}）")
+
     new_stocks = get_new_ipo_symbols(conn, days)
-    conn.close()
 
     if not new_stocks:
-        logger.info("近 {} 天无新股上市，跳过".format(days))
-        return {"stocks": 0, "boards": 0}
+        # 无新股：标记完成
+        update_job_status(conn, job_id, "COMPLETED", rows_written=0)
+        conn.close()
+        logger.info(f"近 {days} 天无新股上市，跳过")
+        return {"stocks": 0, "boards": 0, "job_id": job_id}
 
     logger.info(f"发现 {len(new_stocks)} 只新股: {[s['symbol'] for s in new_stocks]}")
 
     total_boards = 0
     success = 0
     fail = 0
+    error_msg = None
 
-    for stock in new_stocks:
-        symbol = stock['symbol']
-        boards = get_belong_boards(symbol)
-        if not boards:
-            fail += 1
-            logger.warning(f"  {symbol} {stock['name']} 无板块数据")
-            continue
+    try:
+        for stock in new_stocks:
+            symbol = stock['symbol']
+            boards = get_belong_boards(symbol)
+            if not boards:
+                fail += 1
+                logger.warning(f"  {symbol} {stock['name']} 无板块数据")
+                continue
 
-        filtered = [b for b in boards if not _is_excluded(b['name'])]
-        if not filtered:
-            fail += 1
-            logger.warning(f"  {symbol} {stock['name']} 过滤后无有效板块")
-            continue
+            filtered = [b for b in boards if not _is_excluded(b['name'])]
+            if not filtered:
+                fail += 1
+                logger.warning(f"  {symbol} {stock['name']} 过滤后无有效板块")
+                continue
 
-        conn = psycopg2.connect(**DB_CONFIG)
+            stock_conn = psycopg2.connect(**DB_CONFIG)
+            try:
+                upsert_board_master(stock_conn, filtered)
+                written = upsert_board_relation(stock_conn, symbol, filtered)
+                total_boards += written
+                success += 1
+                logger.info(f"  {symbol} {stock['name']} -> {written} 个板块")
+            except Exception as e:
+                fail += 1
+                error_msg = str(e)
+                logger.error(f"  {symbol} 写入失败: {e}")
+            finally:
+                stock_conn.close()
+
+            time.sleep(RATE_LIMIT_DELAY)
+
+        # 确定最终状态
+        if success > 0 and fail == 0:
+            status = "COMPLETED"
+        elif success > 0 and fail > 0:
+            status = "COMPLETED"  # 部分成功也算完成
+        else:
+            status = "FAILED"
+
+        update_job_status(conn, job_id, status, rows_written=total_boards, error_message=error_msg if status == "FAILED" else None)
+    except Exception as e:
+        logger.error(f"同步过程异常: {e}")
         try:
-            upsert_board_master(conn, filtered)
-            written = upsert_board_relation(conn, symbol, filtered)
-            total_boards += written
-            success += 1
-            logger.info(f"  {symbol} {stock['name']} -> {written} 个板块")
-        except Exception as e:
-            fail += 1
-            logger.error(f"  {symbol} 写入失败: {e}")
-        finally:
-            conn.close()
+            update_job_status(conn, job_id, "FAILED", rows_written=0, error_message=str(e))
+        except Exception:
+            pass
 
-        time.sleep(RATE_LIMIT_DELAY)
+    conn.close()
 
     logger.info(f"【新股板块增量同步】完成: {success} 只成功, {fail} 只失败, 共 {total_boards} 个关系")
-    return {"stocks": len(new_stocks), "success": success, "fail": fail, "boards": total_boards}
+    return {"stocks": len(new_stocks), "success": success, "fail": fail, "boards": total_boards, "job_id": job_id}
 
 
 # ========== CLI ==========

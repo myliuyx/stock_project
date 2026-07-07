@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+pydantic
+sqlalchemy
+psycopg2-binary
+apscheduler
+baostock
+efinance
+pandas
+numpy
+python-dotenv
+tenacity

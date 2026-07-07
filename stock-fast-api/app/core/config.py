@@ -3,7 +3,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     APP_NAME: str = "A股股票数据API"
-    APP_VERSION: str = "0.7.1"
+    APP_VERSION: str = "0.8.12"
     API_PREFIX: str = "/api/v1"
 
     # 数据库配置（必须通过环境变量设置）
@@ -19,7 +19,11 @@ class Settings(BaseSettings):
     # JWT 配置
     JWT_SECRET_KEY: str = ""  # 生产环境必须设置环境变量 JWT_SECRET_KEY
     JWT_ALGORITHM: str = "HS256"
-    JWT_EXPIRE_HOURS: int = 24
+    JWT_EXPIRE_HOURS: int = 720  # 30天
+
+    # ETL 引擎连接
+    ETL_ENGINE_URL: str = "http://localhost:8082/api/v1/trigger"
+    ETL_ENGINE_API_KEY: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

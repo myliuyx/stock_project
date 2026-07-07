@@ -7,7 +7,7 @@ ETL Script: 从 Baostock 同步 dwd_security_master 股票主数据
 
 优化策略:
 - 增量同步: industry 查询只针对缺失数据的股票
-- 并发: 使用 ThreadPoolExecutor 并行查询行业
+- 单线程顺序请求，避免触发 Baostock 频率限制
 - 幂等写入: ON CONFLICT (symbol) DO UPDATE
 """
 import baostock as bs
@@ -19,8 +19,6 @@ import re
 import os
 import sys
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from threading import Semaphore
 
 # ========== 配置 ==========
 DB_CONFIG = {
@@ -31,10 +29,10 @@ DB_CONFIG = {
     'password': os.environ.get('DB_PASSWORD', '')
 }
 
-MAX_WORKERS = int(os.environ.get('SYNC_WORKERS', '10'))  # 并发线程数
-RATE_LIMIT_DELAY = float(os.environ.get('SYNC_RATE_DELAY', '0.02'))  # 每次请求间隔（秒）
+RATE_LIMIT_DELAY = float(os.environ.get('SYNC_RATE_DELAY', '0.2'))  # 每次请求间隔（秒）
 BATCH_SIZE = 500  # 批量写入大小
 LOG_DIR = os.environ.get('SYNC_LOG_DIR', '/app/logs')
+
 
 # ========== 工具函数 ==========
 
@@ -105,10 +103,14 @@ def clean_industry(raw: str) -> tuple:
     return l1, l2
 
 
-def query_industry_for_symbol(bs_code: str, semaphore: Semaphore) -> dict:
-    """查询单只股票的行业信息（线程安全）"""
-    with semaphore:
+def query_industry(bs_code: str) -> dict:
+    """顺序查询单只股票的行业信息，带 TCP 超时保护"""
+    try:
         time.sleep(RATE_LIMIT_DELAY)
+
+        # 包裹网络调用：超过 SOCKET_TIMEOUT 秒自动抛出 TimeoutError，不阻塞整个任务
+        old_timeout = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(SOCKET_TIMEOUT)
         try:
             rs = bs.query_stock_industry(code=bs_code)
             if rs.error_code != '0':
@@ -118,8 +120,12 @@ def query_industry_for_symbol(bs_code: str, semaphore: Semaphore) -> dict:
                 l1, l2 = clean_industry(row[3])
                 return {'code': bs_code, 'industry_l1': l1, 'industry_l2': l2}
             return {'code': bs_code, 'industry_l1': None, 'industry_l2': None}
-        except Exception as e:
-            return {'code': bs_code, 'industry_l1': None, 'industry_l2': None}
+        finally:
+            socket.setdefaulttimeout(old_timeout)  # 恢复原值，避免影响其他调用
+    except (socket.timeout, TimeoutError):
+        return {'__error__': f'timeout after {SOCKET_TIMEOUT}s', 'code': bs_code}
+    except Exception as e:
+        return {'__error__': str(e), 'code': bs_code}
 
 
 def get_missing_symbols(conn, limit: int = None) -> list:
@@ -197,7 +203,6 @@ def main():
     logger.info("  股票主数据同步")
     logger.info(f"  数据源: Baostock query_stock_basic + query_stock_industry")
     logger.info(f"  目标表: dwd_security_master")
-    logger.info(f"  并发线程数: {MAX_WORKERS}")
     logger.info(f"  请求间隔: {RATE_LIMIT_DELAY}s")
     logger.info("=" * 70)
 
@@ -240,28 +245,25 @@ def main():
         missing = get_missing_symbols(conn)
         logger.info(f"\n[Step 2] 缺行业信息股票: {len(missing)} 只")
 
-        industry_results = {}  # symbol -> {industry_l1, industry_l2}
+        industry_results = {}
         if missing:
-            semaphore = Semaphore(MAX_WORKERS)
+            symbols = [s['symbol'] for s in missing]
             bs_codes = [to_baostock_code(s['symbol']) for s in missing]
 
-            logger.info(f"  并发查询行业中 (线程数={MAX_WORKERS})...")
-            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-                futures = {
-                    executor.submit(query_industry_for_symbol, bs_code, semaphore): s['symbol']
-                    for bs_code, s in zip(bs_codes, missing)
-                }
-                done = 0
-                for future in as_completed(futures):
-                    symbol = futures[future]
-                    try:
-                        result = future.result()
-                        industry_results[symbol] = result
-                    except Exception as e:
-                        logger.warning(f"  查询行业失败 {symbol}: {e}")
-                    done += 1
-                    if done % 500 == 0 or done == len(missing):
-                        logger.info(f"  行业查询进度: {done}/{len(missing)}")
+            logger.info(f"  顺序查询 {len(missing)} 只股票的行业中...")
+            error_count = 0
+
+            for i, (bs_code, symbol) in enumerate(zip(bs_codes, symbols)):
+                result = query_industry(bs_code)
+                if result.get('__error__'):
+                    error_count += 1
+                    logger.warning(f"  查询行业失败 {symbol}: {result.get('__error__')}")
+                else:
+                    industry_results[symbol] = result
+                if (i + 1) % 500 == 0 or (i + 1) == len(missing):
+                    logger.info(f"  行业查询进度: {i + 1}/{len(missing)}, 失败: {error_count}")
+
+        logger.info(f"  行业查询完成，成功: {len(industry_results)}, 失败: {error_count}")
 
         # ========== Step 3: 合并行业信息到股票数据 ==========
         logger.info("\n[Step 3] 合并行业信息...")

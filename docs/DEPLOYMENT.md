@@ -53,7 +53,7 @@ psql -h <host> -U <user> -d stock_db -f docs/09_postgresql_ddl.sql
 cd stock-fast-api
 
 # Build image
-docker build -t stock-api:0.7.0 .
+docker build -t stock-api:latest .
 
 # Run container
 docker-compose up -d
@@ -253,7 +253,7 @@ psql -h <主机> -U <用户> -d stock_db -f docs/09_postgresql_ddl.sql
 cd stock-fast-api
 
 # 构建镜像
-docker build -t stock-api:0.7.0 .
+docker build -t stock-api:latest .
 
 # 运行容器
 docker-compose up -d

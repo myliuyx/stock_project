@@ -334,7 +334,7 @@ def main():
     parser.add_argument('--start-date', type=str, help='起始日期 YYYY-MM-DD')
     parser.add_argument('--end-date', type=str, help='结束日期 YYYY-MM-DD')
     parser.add_argument('--full', action='store_true', help='全量重算')
-    args = parser.parse_args()
+    args, _ = parser.parse_known_args()
 
     # 确定日期范围
     if args.full:

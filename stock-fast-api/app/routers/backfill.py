@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, BackgroundTasks
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_db
@@ -13,7 +13,6 @@ logger = logging.getLogger("stock_api")
 
 @router.post("/run", summary="触发补历史任务")
 def run_backfill(
-    background_tasks: BackgroundTasks,
     req: BackfillRunRequest,
     db: Session = Depends(get_db),
 ):
@@ -25,26 +24,6 @@ def run_backfill(
         end_date=req.end_date,
         force=req.force,
     )
-    task_id = result.get("task_id")
-
-    if task_id:
-        def _run_backfill():
-            from app.services.backfill_service import BackfillService
-            from app.core.db import SessionLocal
-            import traceback
-
-            db_session = SessionLocal()
-            try:
-                svc = BackfillService(db_session)
-                svc.execute_backfill(task_id, req.symbol, req.data_type, req.start_date, req.end_date, req.force)
-            except Exception as e:
-                logger.error(f"【补历史】task_id={task_id} 执行失败: {e}\n{traceback.format_exc()}")
-                svc.mark_failed(task_id, str(e))
-            finally:
-                db_session.close()
-
-        background_tasks.add_task(_run_backfill)
-
     return success_response(result)
 
 

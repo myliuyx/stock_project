@@ -1,11 +1,40 @@
 services:
+  etl-engine:
+    image: stock-etl-engine:1.0.8
+    build:
+      context: ../stock-etl-engine
+      dockerfile: Dockerfile
+    container_name: stock-etl-engine
+    restart: always
+    ports:
+      - "8001:8001"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - DB_HOST=${DB_HOST:?请设置 DB_HOST 环境变量}
+      - DB_PORT=${DB_PORT:-5432}
+      - DB_NAME=${DB_NAME:?请设置 DB_NAME 环境变量}
+      - DB_USER=${DB_USER:?请设置 DB_USER 环境变量}
+      - DB_PASSWORD=${DB_PASSWORD:?请设置 DB_PASSWORD 环境变量}
+      - ETL_ENGINE_API_KEY=${ETL_ENGINE_API_KEY:-etl_secret_key_2026}
+      - SYNC_START_YEAR=2026
+      - SYNC_END_YEAR=2026
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
   stock-api:
-    image: stock-api:0.7.0
+    image: stock-api:0.8.12
     build: .
     container_name: stock-api
     restart: always
     ports:
       - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - DB_HOST=${DB_HOST:?请设置 DB_HOST 环境变量}
       - DB_PORT=${DB_PORT:-5432}
@@ -14,6 +43,11 @@ services:
       - DB_PASSWORD=${DB_PASSWORD:?请设置 DB_PASSWORD 环境变量}
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:?请设置 JWT_SECRET_KEY 环境变量}
       - CORS_ORIGINS=${CORS_ORIGINS:-}
+      - ETL_ENGINE_URL=http://etl-engine:8001/api/v1/trigger
+      - ETL_ENGINE_API_KEY=${ETL_ENGINE_API_KEY:-etl_secret_key_2026}
+    depends_on:
+      etl-engine:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
       interval: 30s
