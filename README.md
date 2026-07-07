@@ -9,41 +9,49 @@
 
 ### 项目介绍
 
-A 股股票信息缓存系统是一个 A 股本地化数据分析平台，通过 [baostock](http://www.baostock.com/) 将每日市场数据同步到本地 PostgreSQL 数据库，并提供功能完整的 Web 管理后台，支持选股分析、个股详情、板块分析、ETL 任务监控等功能。
+A 股股票信息缓存系统是一个 A 股本地化数据分析平台，通过 [baostock](http://www.baostock.com/) 和 efinance 将每日市场数据同步到本地 PostgreSQL 数据库，并提供功能完整的 Web 管理后台。
+
+**v0.5.0 更新**：ETL 引擎（stock-etl-engine）已从后端独立为单独的微服务，负责所有定时任务调度；新增 9 种选股策略和问股分析功能。
 
 ### 核心功能
 
-- **盘后数据同步** — 自动同步全市场行情、财务指标、技术因子
-- **智能选股** — 按技术指标（均线、RSI、MACD、ATR）和财务指标（ROE、营收、市盈率）筛选
+- **盘后数据同步** — 独立 ETL 引擎自动同步全市场行情、财务指标、技术因子（周一至周五）
+- **9种选股策略** — 底部放量/箱体震荡/多头趋势/缠论/均线金叉/一阳夹三阴/缩量回踩/放量突破/波浪理论
+- **问股分析** — 输入股票代码，自动用全部9种策略扫描并给出评分和信号
 - **个股分析** — K线图、历史行情、技术指标、财务数据、所属板块
 - **板块分析** — 行业板块、概念板块、成分股查询
-- **ETL 任务监控** — 实时任务状态、手动触发、执行日志
+- **自选股管理** — 添加/移除自选股、技术面实时监控
+- **ETL 任务监控** — 实时任务状态、手动触发、执行日志（通过 HTTP 调用独立 ETL 引擎服务）
 - **数据回补** — 支持个股历史数据补充
-- **数据覆盖追踪** — 监控个股历史数据完整性
 
-### 系统架构
+### 系统架构（v0.5.0）
+
+ETL Engine 已从 v0.5.0 起独立为单独的微服务，负责所有定时任务调度：
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      前端 (Vue 3)                            │
-│   控制台 │ 选股 │ 个股详情 │ 板块 │ 任务监控                     │
-└────────────────────────────┬────────────────────────────────┘
-                             │ REST API (/api/v1)
-┌────────────────────────────▼────────────────────────────────┐
-│                   后端 (FastAPI)                             │
-│  Router → Schema → Service → Repository                     │
-│  APScheduler 定时任务 (工作日 18:00-21:30)                    │
-└────────────────────────────┬────────────────────────────────┘
-                             │
-┌────────────────────────────▼────────────────────────────────┐
-│              PostgreSQL (13张表，约630万行)                  │
-│  dwd_stock_daily │ dwd_stock_factor_daily │ mart_selection  │
-└────────────────────────────┬────────────────────────────────┘
-                             │
-┌────────────────────────────▼────────────────────────────────┐
-│                       数据来源                               │
-│                     baostock.com                            │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│                  stock-front_ui (:5173)                   │
+│    Vue 3 | TypeScript | Element Plus | ECharts            │
+│   控制台 │ 选股 │ 个股 │ 板块 │ 策略分析 │ 任务监控        │
+└─────────────────────┬────────────────────────────────────┘
+                      │ /api → http://localhost:8081/api/v1
+┌─────────────────────▼────────────────────────────────────┐
+│              stock-fast-api (:8081)                       │
+│   FastAPI | SQLAlchemy 12个Router | ~50端点               │
+│   Router → Schema → Service → Repository                  │
+│   HTTP 调用 ETL Engine 执行任务                           │
+└───────────┬──────────────────────┬────────────────────────┘
+            │                      │ (共享数据库)
+┌───────────▼──────────────────────▼────────────────────────┐
+│              PostgreSQL (:5432)                           │
+│     16张表 | ~600万+行数据                                │
+└───────────────────────────────────────────────────────────┘
+
+┌───────────────────────────────────────────────────────────┐
+│           stock-etl-engine (:8001 Docker / :8082)         │
+│     APScheduler | 7个活跃定时任务 + 自动调度               │
+│     数据来源: baostock, efinance                          │
+└───────────────────────────────────────────────────────────┘
 ```
 
 ### 技术栈
@@ -51,9 +59,9 @@ A 股股票信息缓存系统是一个 A 股本地化数据分析平台，通过
 | 层级 | 技术 |
 |------|------|
 | 前端 | Vue 3, TypeScript, Vite, Element Plus, ECharts, lightweight-charts |
-| 后端 | FastAPI, SQLAlchemy, APScheduler, Pydantic |
+| 后端 API | FastAPI, SQLAlchemy, Pydantic |
+| ETL Engine | APScheduler, baostock/efinance SDK, FastAPI |
 | 数据库 | PostgreSQL 15+ |
-| 数据源 | baostock, efinance |
 
 ### 快速开始
 
@@ -61,20 +69,21 @@ A 股股票信息缓存系统是一个 A 股本地化数据分析平台，通过
 
 ```bash
 git clone https://github.com/myliuyx/stock_project.git
-cd stock_project/stock-fast-api
+cd stock_project
 
 # 配置环境变量
-cp .env.example .env
+cp stock-fast-api/.env.example stock-fast-api/.env
 # 编辑 .env 填入数据库和 JWT 配置
 
-# 启动后端服务
-docker-compose up -d
+# 一键启动所有服务（PostgreSQL + FastAPI + ETL Engine）
+docker compose up -d
 
-# 前端（独立部署）
-cd ../stock-front_ui
-docker build -t stock-frontend .
-docker run -d -p 5173:80 --name stock-frontend stock-frontend
+# 前端开发模式
+cd stock-front_ui
+npm install && npm run dev
 ```
+
+> **端口说明**：FastAPI `:8081`，ETL Engine Docker `:8001`，前端 `:5173`（开发），PostgreSQL `:5432`
 
 #### 方式二：手动部署
 
@@ -97,8 +106,21 @@ cp .env.example .env
 # 初始化数据库
 psql -h <host> -U <user> -d <dbname> -f docs/09_postgresql_ddl.sql
 
-# 启动服务
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+# 启动服务（端口 :8081）
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8081
+```
+
+**ETL Engine：**
+
+```bash
+cd stock-etl-engine
+
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+# 启动 ETL 引擎（内部 :8082，Docker 映射外部 :8001）
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8082
 ```
 
 **前端：**
@@ -107,9 +129,8 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 cd stock-front_ui
 
 npm install
-
 npm run dev
-# 访问 http://localhost:5173
+# 访问 http://localhost:5173（/api 代理到 :8081）
 ```
 
 ### 环境变量说明
@@ -130,79 +151,93 @@ npm run dev
 
 ```
 stock_project/
-├── stock-fast-api/          # FastAPI 后端
+├── stock-fast-api/          # FastAPI 后端 REST API（:8081）
 │   ├── app/
-│   │   ├── core/            # 配置、数据库、异常、响应封装
-│   │   ├── routers/         # API 路由模块（10个文件，42个端点）
+│   │   ├── core/            # 配置、数据库连接、异常、响应封装
+│   │   ├── routers/         # API 路由模块（12个文件，~50端点）
 │   │   ├── schemas/         # Pydantic 数据模型
 │   │   ├── services/        # 业务逻辑（10个服务）
-│   │   ├── repositories/    # 数据访问层（6个仓库）
-│   │   └── jobs/            # ETL 任务脚本（10个任务）
+│   │   ├── repositories/    # 数据访问层（10个仓库）
+│   │   └── middleware/      # 请求处理中间件
 │   ├── docs/                # API 文档、数据库设计、架构文档
+│   ├── tests/               # 后端测试
 │   └── docker-compose.yml   # Docker 部署配置
-│
-└── stock-front_ui/          # Vue 3 前端
-    ├── src/
-    │   ├── api/             # Axios 请求层
-    │   ├── components/      # 按模块分类的 Vue 组件
-    │   ├── pages/           # 路由页面组件
-    │   ├── stores/          # Pinia 状态管理
-    │   └── layouts/         # 主布局组件
-    └── nginx.conf           # Nginx 配置
+├── stock-front_ui/          # Vue 3 前端（:5173 开发）
+│   ├── src/
+│   │   ├── api/             # Axios 请求层（12个模块）
+│   │   ├── components/      # 按模块分类的 Vue 组件
+│   │   ├── pages/           # 路由页面组件（17个）
+│   │   ├── stores/          # Pinia 状态管理
+│   │   └── layouts/         # 主布局组件
+├── stock-etl-engine/        # ETL 引擎独立微服务（Docker :8001 / 内网 :8082）
+│   ├── app/
+│   │   ├── core/            # 配置、日志、异常处理
+│   │   ├── routers/         # 触发接口 (/api/v1/trigger/*)
+│   │   ├── services/        # ETL 任务服务
+│   │   ├── jobs/            # 7个活跃定时脚本（同步、计算、构建）
+│   │   └── scheduler.py     # APScheduler 调度 + 超时保护
+│   ├── docs/                # ETL 引擎设计文档
+│   └── Dockerfile           # ETL 容器镜像
+└── docs/                    # 项目级文档（快速入门、部署指南等）
 ```
 
 ### 数据库表
 
-| 表名 | 记录数（约） | 说明 |
-|------|-------------|------|
-| `dwd_security_master` | 5,198 | 股票主数据（代码、名称、交易所、行业） |
-| `dwd_stock_daily` | 487万 | 日线行情数据 |
-| `dwd_stock_financial_indicator` | 35,811 | 财务指标 |
-| `dwd_stock_adjust_factor` | 33,948 | 复权因子 |
-| `dwd_board_master` | 83 | 板块定义 |
-| `dwd_board_relation` | 5,199 | 股票-板块关系 |
-| `dwd_stock_factor_daily` | 127万 | 技术指标（均线、RSI、MACD、ATR） |
-| `mart_stock_selection_daily` | 62万 | 选股宽表 |
-| `etl_job_run` | 934+ | ETL 任务执行记录 |
+| 层级 | 表名 | 记录数（约） | 说明 |
+|------|------|-------------|------|
+| **维度** | `dwd_security_master` | 5,198 | 股票主数据（代码、名称、交易所、行业） |
+|  | `dwd_board_master` + `dwd_board_relation` | 83 / 5,199 | 板块定义与股票-板块关系 |
+| **事实** | `dwd_trade_calendar` | — | A股交易日历 |
+|  | `dwd_stock_daily` | ~487万 | 日线行情数据（OHLCV） |
+|  | `dwd_stock_factor_daily` | ~127万 | 技术指标（MA/RSI/MACD/ATR等） |
+|  | `dwd_stock_financial_indicator` | ~36,000 | 财务指标（ROE/营收/利润等） |
+| **宽表** | `mart_stock_selection_daily` | ~62万 | 选股分析宽表 |
+|  | `etl_job_run` + `etl_job_run_log` | — | ETL 任务执行记录与日志 |
 
 ### API 文档
 
-API 前缀：`/api/v1`
+API 前缀：`/api/v1`（后端端口 :8081）
 
 | 模块 | 端点数 | 说明 |
 |------|--------|------|
 | Auth | 2 | 登录、Token 验证 |
-| Dashboard | 4 | 系统概览、任务状态 |
-| Selection | 5 | 选股查询、导出 |
-| Stocks | 9 | 行情搜索、个股资料、日线、技术因子、财务数据 |
-| Jobs | 9 | 任务列表、触发、取消、日志 |
+| Dashboard | 4 | 系统概览、自选股分析 |
+| Selection | 5 | 选股结果查询/导出 |
+| Stocks | 9 | 行情搜索、个股资料、日线、因子、财务等 |
+| **Strategies** | **4** | **9种策略列表、详情、查询、问股分析（v0.5.0 新增）** |
+| Jobs | **13** | **任务列表、7个专用触发接口 + 通用触发、日志（ETL Engine HTTP调用）** |
 | Coverage | 3 | 数据覆盖概览 |
-| Boards | 3 | 板块列表、板块详情、成分股 |
+| Boards | 3 | 板块列表、详情、成分股 |
 | Backfill | 2 | 历史数据回补 |
+| System | 1 | 系统元信息 |
 | Watchlist | 4 | 自选股管理 |
 
 完整 API 文档：[`stock-fast-api/docs/REGISTRY.md`](stock-fast-api/docs/REGISTRY.md)
 
-### 定时任务
+### ETL 定时任务（stock-etl-engine）
 
-> 详细配置见 [定时任务使用文档](stock-fast-api/docs/定时任务使用文档.md)
+> 详细配置见 [定时任务使用文档](stock-fast-api/docs/定时任务使用文档.md)。
+> 调度逻辑已迁移至独立服务 `stock-etl-engine`，由 APScheduler 管理。
 
-时间均为北京时间（UTC+8）：
+时间均为北京时间（UTC+8），周一至周五自动执行：
 
-| 任务ID | 执行时间 | 说明 |
-|--------|----------|------|
-| `security_master_sync` | 工作日 18:00 | 同步股票主数据 |
-| `daily_stock_sync` | 工作日 19:00 | 同步日线行情 |
-| `factor_compute` | 工作日 20:30 | 计算技术指标 |
-| `selection_mart` | 工作日 21:30 | 构建选股宽表 |
-| `cleanup_logs` | 每日 00:05 | 清理超过3天的日志 |
+| # | 任务名 | Cron 时间 | 说明 |
+|---|--------|----------|------|
+| 1 | 新股板块增量同步 | **17:30** | 近7天上市新股及其所属板块 |
+| 2 | 股票主数据同步 | **18:00** | 全市场股票基础信息 |
+| 3 | 日线行情同步 | **19:00** | 全市场行情 OHLCV 数据 |
+| 4 | 技术因子计算 | **23:00** | MA/RSI/MACD/BOLL 等指标 |
+| 5 | 选股宽表构建 | **23:30** | 汇总行情+因子+财务 → 选股分析 |
+| — | 日志清理 | 每日 00:05（独立） | 清理超3天日志文件 |
+
+> ⏸️ 已暂停：复权因子同步 (原20:00)、财务指标同步 (原21:30) —— 仍可通过手动触发接口调用。
 
 ### 相关文档
 
 - [快速入门指南](docs/QUICK_START.md)
 - [用户使用指南](docs/USER_GUIDE.md)
 - [Docker 部署详解](docs/DEPLOYMENT.md)
-- [API 接口文档](stock-fast-api/docs/REGISTRY.md)
+- [API 接口文档（50端点）](stock-fast-api/docs/REGISTRY.md)
 - [数据库设计文档](stock-fast-api/docs/A股股票信息缓存系统数据库设计文档.md)
 - [架构设计文档](stock-fast-api/docs/A股股票信息缓存系统架构设计文档.md)
 
@@ -228,29 +263,34 @@ A-Stock Information Caching System is a local data analysis platform for China's
 - **Historical Data Backfill** — Supplement missing data for individual stocks
 - **Data Coverage Tracking** — Monitor historical data completeness per stock
 
-### Architecture
+### Architecture (v0.5.0)
+
+ETL Engine was decoupled into an independent microservice in v0.5.0 for all scheduled task orchestration:
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      Frontend (Vue 3)                       │
-│   Dashboard │ Selection │ Stock Detail │ Boards │ Jobs      │
-└────────────────────────────┬────────────────────────────────┘
-                             │ REST API (/api/v1)
-┌────────────────────────────▼────────────────────────────────┐
-│                   Backend (FastAPI)                         │
-│  Router → Schema → Service → Repository                     │
-│  APScheduler (Daily 18:00-21:30 Beijing Time)              │
-└────────────────────────────┬────────────────────────────────┘
-                             │
-┌────────────────────────────▼────────────────────────────────┐
-│              PostgreSQL (13 tables, ~6.3M rows)             │
-│  dwd_stock_daily │ dwd_stock_factor_daily │ mart_selection  │
-└────────────────────────────┬────────────────────────────────┘
-                             │
-┌────────────────────────────▼────────────────────────────────┐
-│                     Data Source                             │
-│                   baostock.com                              │
-└─────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────┐
+│              stock-front_ui (:5173)                    │
+│   Vue 3 | TypeScript | Element Plus | ECharts          │
+│   Dashboard │ Selection │ Stock │ Strategies │ Jobs    │
+└─────────────────────┬─────────────────────────────────┘
+                      │ /api → http://localhost:8081/api/v1
+┌─────────────────────▼─────────────────────────────────┐
+│          stock-fast-api (:8081)                        │
+│   FastAPI | SQLAlchemy | 12 Routers | ~50 endpoints    │
+│   Router → Schema → Service → Repository               │
+│   HTTP calls to ETL Engine for async job execution     │
+└───────────┬─────────────────────┬──────────────────────┘
+            │                     │ (shared database)
+┌───────────▼─────────────────────▼──────────────────────┐
+│         PostgreSQL (:5432)                              │
+│      16 tables | ~6M+ rows                              │
+└────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────┐
+│    stock-etl-engine (:8001 Docker / :8082 internal)     │
+│   APScheduler | 7 active scheduled jobs                 │
+│   Data sources: baostock, efinance                      │
+└────────────────────────────────────────────────────────┘
 ```
 
 ### Tech Stack
@@ -258,9 +298,9 @@ A-Stock Information Caching System is a local data analysis platform for China's
 | Layer | Technology |
 |-------|------------|
 | Frontend | Vue 3, TypeScript, Vite, Element Plus, ECharts, lightweight-charts |
-| Backend | FastAPI, SQLAlchemy, APScheduler, Pydantic |
+| Backend API | FastAPI, SQLAlchemy, Pydantic |
+| ETL Engine | APScheduler, baostock/efinance SDK, FastAPI |
 | Database | PostgreSQL 15+ |
-| Data Source | baostock, efinance |
 
 ### Quick Start
 
@@ -268,20 +308,21 @@ A-Stock Information Caching System is a local data analysis platform for China's
 
 ```bash
 git clone https://github.com/myliuyx/stock_project.git
-cd stock_project/stock-fast-api
+cd stock_project
 
 # Configure environment
-cp .env.example .env
+cp stock-fast-api/.env.example stock-fast-api/.env
 # Edit .env with your database and JWT settings
 
-# Start services
-docker-compose up -d
+# Start all services (PostgreSQL + FastAPI + ETL Engine)
+docker compose up -d
 
-# Frontend (separate)
-cd ../stock-front_ui
-docker build -t stock-frontend .
-docker run -d -p 5173:80 --name stock-frontend stock-frontend
+# Frontend dev mode
+cd stock-front_ui
+npm install && npm run dev
 ```
+
+> **Ports**: FastAPI `:8081`, ETL Engine Docker `:8001`, Frontend `:5173` (dev), PostgreSQL `:5432`
 
 #### Option 2: Manual Setup
 
@@ -304,8 +345,21 @@ cp .env.example .env
 # Initialize database
 psql -h <host> -U <user> -d <dbname> -f docs/09_postgresql_ddl.sql
 
-# Start server
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+# Start server (port :8081)
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8081
+```
+
+**ETL Engine:**
+
+```bash
+cd stock-etl-engine
+
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+# Start ETL engine (internal :8082, Docker maps external :8001)
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8082
 ```
 
 **Frontend:**
@@ -314,9 +368,8 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 cd stock-front_ui
 
 npm install
-
 npm run dev
-# Visit http://localhost:5173
+# Visit http://localhost:5173 (/api proxied to :8081)
 ```
 
 ### Environment Variables
@@ -337,77 +390,93 @@ npm run dev
 
 ```
 stock_project/
-├── stock-fast-api/          # FastAPI backend
+├── stock-fast-api/          # FastAPI REST API backend (:8081)
 │   ├── app/
-│   │   ├── core/            # Config, database, exceptions, response
-│   │   ├── routers/         # API route modules (10 files, 42 endpoints)
-│   │   ├── schemas/         # Pydantic DTOs
+│   │   ├── core/            # Config, DB connection, exceptions, response
+│   │   ├── routers/         # API route modules (12 files, ~50 endpoints)
+│   │   ├── schemas/         # Pydantic data models
 │   │   ├── services/        # Business logic (10 services)
-│   │   ├── repositories/    # Data access (6 repositories)
-│   │   └── jobs/            # ETL job scripts (10 jobs)
+│   │   ├── repositories/    # Data access layer (10 repos)
+│   │   └── middleware/      # Request processing middleware
 │   ├── docs/                # API registry, DB design, architecture docs
-│   └── docker-compose.yml   # Docker deployment
-│
-└── stock-front_ui/          # Vue 3 frontend
-    ├── src/
-    │   ├── api/             # Axios API layer
-    │   ├── components/      # Vue components by module
-    │   ├── pages/           # Route page components
-    │   ├── stores/          # Pinia state management
-    │   └── layouts/         # Main layout
-    └── nginx.conf           # Nginx configuration
+│   ├── tests/               # Backend tests
+│   └── docker-compose.yml   # Docker deployment config
+├── stock-front_ui/          # Vue 3 frontend (:5173 dev)
+│   ├── src/
+│   │   ├── api/             # Axios API layer (12 modules)
+│   │   ├── components/      # Vue components by module
+│   │   ├── pages/           # Route page components (17 pages)
+│   │   ├── stores/          # Pinia state management
+│   │   └── layouts/         # Main layout component
+├── stock-etl-engine/        # ETL engine microservice (:8001 Docker / :8082 internal)
+│   ├── app/
+│   │   ├── core/            # Config, logging, exceptions
+│   │   ├── routers/         # Trigger API (/api/v1/trigger/*)
+│   │   ├── services/        # ETL task services
+│   │   ├── jobs/            # 7 active scheduled scripts (sync, compute, build)
+│   │   └── scheduler.py     # APScheduler orchestrator + timeout protection
+│   ├── docs/                # ETL engine design documentation
+│   └── Dockerfile           # ETL container image
+└── docs/                    # Project-level docs (quick start, deployment guide, etc.)
 ```
 
 ### Database Tables
 
-| Table | Rows (approx.) | Description |
-|-------|---------------|-------------|
-| `dwd_security_master` | 5,198 | Stock master data (symbol, name, exchange, industry) |
-| `dwd_stock_daily` | 4.87M | Daily OHLCV data |
-| `dwd_stock_financial_indicator` | 35,811 | Financial indicators |
-| `dwd_stock_adjust_factor` | 33,948 | Price adjustment factors |
-| `dwd_board_master` | 83 | Board/sector definitions |
-| `dwd_board_relation` | 5,199 | Stock-board relationships |
-| `dwd_stock_factor_daily` | 1.27M | Technical factors (MA, RSI, MACD, ATR) |
-| `mart_stock_selection_daily` | 621,491 | Stock selection wide table |
-| `etl_job_run` | 934+ | ETL job execution records |
+| Layer | Table | Rows (approx.) | Description |
+|-------|-------|---------------|-------------|
+| **Dimension** | `dwd_security_master` | 5,198 | Stock master data (symbol, name, exchange, industry) |
+|  | `dwd_board_master` + `dwd_board_relation` | 83 / 5,199 | Board definitions and stock-board relationships |
+| **Fact** | `dwd_trade_calendar` | — | A-share trading calendar |
+|  | `dwd_stock_daily` | ~4.87M | Daily OHLCV market data |
+|  | `dwd_stock_factor_daily` | ~1.27M | Technical factors (MA/RSI/MACD/ATR etc.) |
+|  | `dwd_stock_financial_indicator` | ~36K | Financial indicators (ROE/revenue/profit) |
+| **Mart** | `mart_stock_selection_daily` | ~620K | Stock screening analysis wide table |
+|  | `etl_job_run` + `etl_job_run_log` | — | ETL task execution records and logs |
 
 ### API Documentation
 
-API base URL: `/api/v1`
+API base URL: `/api/v1` (backend port :8081)
 
 | Module | Endpoints | Description |
 |--------|-----------|-------------|
 | Auth | 2 | Login, token verification |
-| Dashboard | 4 | System overview, task summary |
-| Selection | 5 | Stock screening, export |
-| Stocks | 9 | Quote search, profile, daily, factors, finance |
-| Jobs | 9 | Task list, trigger, cancel, logs |
+| Dashboard | 4 | System overview, watchlist analysis |
+| Selection | 5 | Stock screening results query/export |
+| Stocks | 9 | Quote search, profile, daily, factors, finance etc. |
+| **Strategies** | **4** | **9 strategy lists/detail/query/stock analysis (v0.5.0 new)** |
+| Jobs | **13** | **Task list, 7 dedicated trigger APIs + generic trigger, logs (ETL Engine HTTP calls)** |
 | Coverage | 3 | Data coverage overview |
 | Boards | 3 | Board list, detail, members |
 | Backfill | 2 | Historical data backfill |
+| System | 1 | System metadata |
 | Watchlist | 4 | User watchlist management |
 
 Full API documentation: [`stock-fast-api/docs/REGISTRY.md`](stock-fast-api/docs/REGISTRY.md)
 
-### Scheduled Tasks
+### ETL Scheduled Tasks (stock-etl-engine)
 
-All times in Beijing time (UTC+8):
+> Detailed config at [定时任务使用文档](stock-fast-api/docs/定时任务使用文档.md).
+> Scheduling logic moved to independent service `stock-etl-engine`, managed by APScheduler.
 
-| Task ID | Schedule | Description |
-|---------|----------|-------------|
-| `security_master_sync` | Mon-Fri 18:00 | Sync stock master data |
-| `daily_stock_sync` | Mon-Fri 19:00 | Sync daily OHLCV |
-| `factor_compute` | Mon-Fri 20:30 | Compute technical factors |
-| `selection_mart` | Mon-Fri 21:30 | Build stock selection mart |
-| `cleanup_logs` | Daily 00:05 | Clean old logs (>3 days) |
+All times in Beijing time (UTC+8), auto-executes Mon-Fri:
+
+| # | Task Name | Cron Time | Description |
+|---|-----------|----------|-------------|
+| 1 | New IPO Board Sync | **17:30** | Recent 7-day IPO stocks and their boards |
+| 2 | Stock Master Data Sync | **18:00** | Full market stock basic info |
+| 3 | Daily OHLCV Sync | **19:00** | Full market daily OHLCV data |
+| 4 | Technical Factor Compute | **23:00** | MA/RSI/MACD/BOLL etc. indicators |
+| 5 | Selection Mart Build | **23:30** | Aggregate OHLCV+factors+finance → screening analysis |
+| — | Log Cleanup | Daily 00:05 (independent) | Clean logs >3 days old |
+
+> ⏸️ Paused: Adjustment factor sync (was 20:00), Financial indicator sync (was 21:30) — still accessible via manual trigger API.
 
 ### Related Documents
 
 - [Quick Start Guide](docs/QUICK_START.md)
 - [User Guide](docs/USER_GUIDE.md)
 - [Deployment Guide](docs/DEPLOYMENT.md)
-- [API Registry](stock-fast-api/docs/REGISTRY.md)
+- [API Registry (50 endpoints)](stock-fast-api/docs/REGISTRY.md)
 - [Database Design](stock-fast-api/docs/A股股票信息缓存系统数据库设计文档.md)
 - [Architecture Design](stock-fast-api/docs/A股股票信息缓存系统架构设计文档.md)
 

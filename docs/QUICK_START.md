@@ -53,51 +53,60 @@ psql -h <host> -U <user> -c "CREATE DATABASE stock_db;"
 psql -h <host> -U <user> -d stock_db -f docs/09_postgresql_ddl.sql
 ```
 
-#### Step 4: Start Backend
+#### Step 4: Start All Services
+
+v0.5.0 起包含独立 ETL Engine 服务：
 
 ```bash
-docker-compose up -d
-# Backend API available at http://localhost:8000
-# API docs at http://localhost:8000/docs
+docker compose up -d
+
+# Services running:
+#   PostgreSQL    → localhost:5432
+#   FastAPI       → http://localhost:8081 (API docs at /docs)
+#   ETL Engine    → Docker :8001 / internal :8082
 ```
 
-#### Step 5: Build and Start Frontend
+#### Step 5: Start Frontend (Dev Mode)
 
 ```bash
-cd ../stock-front_ui
+cd stock-front_ui
 
-# Build Docker image
-docker build -t stock-frontend .
-
-# Run frontend
-docker run -d -p 5173:80 --name stock-frontend stock-frontend
-
+npm install && npm run dev
 # Frontend available at http://localhost:5173
+# (/api requests proxied to backend :8081)
 ```
 
 ### Option 2: Manual Setup
 
-#### Backend
+#### Backend (FastAPI)
 
 ```bash
 cd stock-fast-api
 
-# Create virtual environment
 python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
 
-# Install dependencies
 pip install -r requirements.txt
-
-# Configure environment
 cp .env.example .env
 # Edit .env with your database and JWT settings
 
-# Initialize database
 psql -h <host> -U <user> -d <dbname> -f docs/09_postgresql_ddl.sql
 
-# Start server
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+# Start server (port :8081)
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8081
+```
+
+#### ETL Engine
+
+```bash
+cd stock-etl-engine
+
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+# Start ETL engine (internal :8082, Docker maps external :8001)
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8082
 ```
 
 #### Frontend
@@ -106,9 +115,8 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 cd stock-front_ui
 
 npm install
-
 npm run dev
-# Visit http://localhost:5173
+# Visit http://localhost:5173 (/api proxied to :8081)
 ```
 
 ### First Login
@@ -122,10 +130,14 @@ npm run dev
 ### Verify Installation
 
 ```bash
-# Test backend API
-curl http://localhost:8000/api/v1/system/meta
+# Test backend API (port :8081)
+curl http://localhost:8081/api/v1/system/meta
 
 # Expected response: {"code": 0, "message": "success", "data": {...}}
+
+# Test ETL Engine health
+curl http://localhost:8001/
+# Response: {"status":"ok","scheduler_running":true,"jobs":{...}}
 ```
 
 ---
@@ -183,8 +195,9 @@ psql -h <主机> -U <用户> -d stock_db -f docs/09_postgresql_ddl.sql
 
 ```bash
 docker-compose up -d
-# 后端 API 地址: http://localhost:8000
-# API 文档: http://localhost:8000/docs
+# 后端 API 地址 (FastAPI): http://localhost:8081
+# ETL Engine: Docker :8001 / internal :8082
+# API 文档: http://localhost:8081/docs
 ```
 
 #### 步骤 5: 构建并启动前端
@@ -223,7 +236,7 @@ cp .env.example .env
 psql -h <主机> -U <用户> -d <数据库名> -f docs/09_postgresql_ddl.sql
 
 # 启动服务
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8081
 ```
 
 #### 前端
@@ -248,8 +261,11 @@ npm run dev
 ### 验证安装
 
 ```bash
-# 测试后端 API
-curl http://localhost:8000/api/v1/system/meta
+# 测试后端 API (端口 :8081)
+curl http://localhost:8081/api/v1/system/meta
+
+# 测试 ETL Engine 健康检查
+curl http://localhost:8001/
 
 # 预期响应: {"code": 0, "message": "success", "data": {...}}
 ```

@@ -59,7 +59,26 @@ docker build -t stock-api:latest .
 docker-compose up -d
 ```
 
-The API will be available at `http://localhost:8000`.
+The API will be available at `http://localhost:8081`.
+
+### Architecture Overview (v0.5.0+)
+
+Starting from v0.5.0, the system uses a **microservice architecture** with ETL Engine as a separate service:
+
+```
+baostock/efinance → ETL Engine (:8001 ext / :8082 int) → PostgreSQL ← FastAPI (:8081) ← Frontend (:5173)
+```
+
+| Service | Container Port | External Port | Description |
+|---------|---------------|---------------|-------------|
+| etl-engine | 8001 (internal HTTP server) | 8001 | ETL data sync engine, independent Docker image in `stock-etl-engine/` |
+| stock-api | 8081 (FastAPI) | 8081 | REST API gateway, reads from PostgreSQL |
+| stock-frontend | 80 (Nginx) | 5173 | Vue 3 admin dashboard |
+
+**Key changes in v0.5.0:**
+- ETL Engine moved to `stock-etl-engine/` as a standalone microservice with its own Docker image and scheduler (APScheduler)
+- FastAPI port changed from :8000 → :8081 externally
+- Data flow: ETL Engine fetches from baostock/efinance sources, writes to PostgreSQL; FastAPI only reads data
 
 ### Frontend Deployment
 
@@ -98,7 +117,7 @@ server {
 
     # Proxy API requests to backend
     location /api/ {
-        proxy_pass http://backend:8000/api/;
+        proxy_pass http://stock-api:8081/api/;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
@@ -110,15 +129,50 @@ server {
 Create a `docker-compose.yml` at project root:
 
 ```yaml
-version: '3.8'
-
 services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: stock-postgres
+    restart: always
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=${DB_NAME:-stock_db}
+      - POSTGRES_USER=${DB_USER:-stock_user}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-stock_user}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  etl-engine:
+    build: ../stock-etl-engine
+    container_name: stock-etl-engine
+    restart: always
+    ports:
+      - "8001:8001"
+    environment:
+      - DB_HOST=${DB_HOST:?Please set DB_HOST}
+      - DB_PORT=${DB_PORT:-5432}
+      - DB_NAME=${DB_NAME:?Please set DB_NAME}
+      - DB_USER=${DB_USER:?Please set DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD:?Please set DB_PASSWORD}
+      - ETL_ENGINE_API_KEY=${ETL_ENGINE_API_KEY:-etl_secret_key_2026}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
   stock-api:
     build: ./stock-fast-api
     container_name: stock-api
     restart: always
     ports:
-      - "8000:8000"
+      - "8081:8081"
     environment:
       - DB_HOST=${DB_HOST}
       - DB_PORT=${DB_PORT:-5432}
@@ -127,14 +181,21 @@ services:
       - DB_PASSWORD=${DB_PASSWORD}
       - JWT_SECRET_KEY=${JWT_SECRET_KEY}
       - CORS_ORIGINS=${CORS_ORIGINS:-}
+      - ETL_ENGINE_URL=http://etl-engine:8001/api/v1/trigger
+      - ETL_ENGINE_API_KEY=${ETL_ENGINE_API_KEY:-etl_secret_key_2026}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      etl-engine:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8081/')"]
       interval: 30s
       timeout: 10s
       retries: 3
 
   stock-frontend:
-    build: ./stock-front_ui
+    build: ../stock-front_ui
     container_name: stock-frontend
     restart: always
     ports:
@@ -142,14 +203,14 @@ services:
     depends_on:
       - stock-api
 
-networks:
-  default:
-    name: stock-network
+volumes:
+  pgdata:
 ```
 
-Run with:
+Run from `stock-fast-api/`:
 
 ```bash
+cd stock-fast-api
 docker-compose up -d
 ```
 
@@ -176,7 +237,7 @@ docker logs stock-api
 # Common issues:
 # - Missing environment variables
 # - Database connection failed
-# - Port 8000 already in use
+# - Port 8081 already in use (FastAPI), port 8001 already in use (ETL Engine)
 ```
 
 #### Frontend returns 502
@@ -259,7 +320,26 @@ docker build -t stock-api:latest .
 docker-compose up -d
 ```
 
-API 地址：`http://localhost:8000`
+API 地址：`http://localhost:8081`
+
+### 架构概览 (v0.5.0+)
+
+从 v0.5.0 开始，系统采用**微服务架构**，ETL Engine 作为独立服务运行：
+
+```
+baostock/efinance → ETL Engine (:8001 外网 / :8082 内网) → PostgreSQL ← FastAPI (:8081) ← 前端 (:5173)
+```
+
+| 服务 | 容器端口 | 外部端口 | 说明 |
+|------|---------|---------|------|
+| etl-engine | 8001（内部 HTTP 服务器） | 8001 | ETL 数据同步引擎，独立 Docker 镜像位于 `stock-etl-engine/` |
+| stock-api | 8081 (FastAPI) | 8081 | REST API 网关，只读 PostgreSQL |
+| stock-frontend | 80 (Nginx) | 5173 | Vue 3 管理后台 |
+
+**v0.5.0 主要变更：**
+- ETL Engine 迁移至 `stock-etl-engine/` 作为独立微服务，拥有独立的 Docker 镜像和调度器（APScheduler）
+- FastAPI 外部端口从 :8000 → :8081
+- 数据流向：ETL Engine 从 baostock/efinance 获取数据写入 PostgreSQL；FastAPI 仅负责读取数据
 
 ### 前端部署
 
@@ -298,7 +378,7 @@ server {
 
     # API 请求代理到后端
     location /api/ {
-        proxy_pass http://backend:8000/api/;
+        proxy_pass http://stock-api:8081/api/;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
@@ -310,15 +390,50 @@ server {
 在项目根目录创建 `docker-compose.yml`：
 
 ```yaml
-version: '3.8'
-
 services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: stock-postgres
+    restart: always
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=${DB_NAME:-stock_db}
+      - POSTGRES_USER=${DB_USER:-stock_user}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-stock_user}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  etl-engine:
+    build: ../stock-etl-engine
+    container_name: stock-etl-engine
+    restart: always
+    ports:
+      - "8001:8001"
+    environment:
+      - DB_HOST=${DB_HOST:?请设置 DB_HOST}
+      - DB_PORT=${DB_PORT:-5432}
+      - DB_NAME=${DB_NAME:?请设置 DB_NAME}
+      - DB_USER=${DB_USER:?请设置 DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD:?请设置 DB_PASSWORD}
+      - ETL_ENGINE_API_KEY=${ETL_ENGINE_API_KEY:-etl_secret_key_2026}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
   stock-api:
     build: ./stock-fast-api
     container_name: stock-api
     restart: always
     ports:
-      - "8000:8000"
+      - "8081:8081"
     environment:
       - DB_HOST=${DB_HOST}
       - DB_PORT=${DB_PORT:-5432}
@@ -327,14 +442,21 @@ services:
       - DB_PASSWORD=${DB_PASSWORD}
       - JWT_SECRET_KEY=${JWT_SECRET_KEY}
       - CORS_ORIGINS=${CORS_ORIGINS:-}
+      - ETL_ENGINE_URL=http://etl-engine:8001/api/v1/trigger
+      - ETL_ENGINE_API_KEY=${ETL_ENGINE_API_KEY:-etl_secret_key_2026}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      etl-engine:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8081/')"]
       interval: 30s
       timeout: 10s
       retries: 3
 
   stock-frontend:
-    build: ./stock-front_ui
+    build: ../stock-front_ui
     container_name: stock-frontend
     restart: always
     ports:
@@ -342,14 +464,14 @@ services:
     depends_on:
       - stock-api
 
-networks:
-  default:
-    name: stock-network
+volumes:
+  pgdata:
 ```
 
-启动命令：
+从 `stock-fast-api/` 目录启动：
 
 ```bash
+cd stock-fast-api
 docker-compose up -d
 ```
 
@@ -376,7 +498,7 @@ docker logs stock-api
 # 常见问题：
 # - 环境变量未设置
 # - 数据库连接失败
-# - 端口 8000 被占用
+# - 端口 8081 被占用（FastAPI），端口 8001 被占用（ETL Engine）
 ```
 
 #### 前端返回 502
