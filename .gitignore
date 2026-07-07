@@ -60,3 +60,8 @@ front_ui/node_modules/
 # Temporary
 *.tmp
 *.bak
+
+# Claude Code / AI workspace cache
+.claude/
+AGENTS.md
+memory/
