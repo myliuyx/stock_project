@@ -1,7 +1,7 @@
 # A股股票信息缓存系统 - API 接口文档
 
-> **版本**: v0.4.2
-> **Base URL**: `http://{host}:8000/api/v1`
+> **版本**: v0.5.0
+> **Base URL**: `http://{host}:8081/api/v1`
 > **Single Source of Truth** — 本文档描述所有已实现的接口
 
 ---
@@ -516,6 +516,8 @@
 
 ## 五、Jobs ETL任务
 
+> **注意**：ETL Engine 已从 v0.5.0 起独立为子仓库 `stock-etl-engine`。FastAPI 通过 HTTP 调用 ETL Engine（端口 8001）执行定时任务，本模块仅提供任务状态查询和手动触发接口。
+
 ### GET /jobs
 获取任务列表
 
@@ -529,22 +531,17 @@
 
 ---
 
-### POST /jobs/run
-手工触发任务
+### POST /jobs/sync-trade-calendar
+手动触发交易日历同步（调用 ETL Engine）
 
-**请求体**:
-```json
-{
-  "job_name": "string",
-  "biz_date": "2026-04-29",
-  "force": false
-}
-```
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| trade_date | string | 交易日期，不传则用最近交易日 |
 
 ---
 
 ### POST /jobs/sync-daily
-手动触发日线同步
+手动触发日线行情同步（调用 ETL Engine）
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
@@ -554,7 +551,7 @@
 ---
 
 ### POST /jobs/sync-financial
-手动触发财务指标同步
+手动触发财务指标同步（调用 ETL Engine，已暂停）
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
@@ -564,7 +561,7 @@
 ---
 
 ### POST /jobs/sync-factor
-手动触发技术因子计算
+手动触发技术因子计算（调用 ETL Engine）
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
@@ -574,12 +571,46 @@
 ---
 
 ### POST /jobs/sync-selection
-手动触发选股宽表构建
+手动触发选股宽表构建（调用 ETL Engine）
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
 | trade_date | string | 交易日期，不传则构建最近5个交易日 |
 | full | bool | 是否全量重算（最近2年） |
+
+---
+
+### POST /jobs/sync-adjust-factor
+手动触发复权因子同步（调用 ETL Engine，已暂停）
+
+---
+
+### POST /jobs/sync-new-ipo-boards
+手动触发新股板块增量同步（调用 ETL Engine）
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| trade_date | string | 交易日期 |
+
+---
+
+### POST /jobs/sync-board-relation-full
+手动触发全量板块关系同步（调用 ETL Engine）
+
+---
+
+### POST /jobs/run
+通用手工触发接口
+
+**请求体**:
+```json
+{
+  "job_id": 1,           // 任务ID（优先使用 /sync-* 专用接口）
+  "force": false
+}
+```
+
+> **推荐**：优先使用 `/jobs/sync-*` 系列专用接口，它们提供更清晰的参数和错误处理。
 
 ---
 
@@ -790,6 +821,88 @@
 
 ---
 
+## 十一、Strategies 选股策略
+
+> **新增 v0.5.0** — ETL引擎迁移后新增的策略分析模块，内置9种技术分析策略。
+
+### GET /strategies
+获取全部策略列表
+
+**响应**: list，每项包含 `id`, `name`, `name_en`, `description`, `priority`, `market_state`, `signals`
+
+**返回 9 个策略：**
+| ID | 名称 | 适用场景 |
+|----|------|----------|
+| bull_trend | 多头趋势 | MA5≥MA10≥MA20多头排列 |
+| ma_golden_cross | 均线金叉 | MA5上穿MA10，近3日内 |
+| volume_breakout | 放量突破 | 突破20日高点，量比>2 |
+| shrink_pullback | 缩量回踩 | 上升趋势中回踩MA5/MA10 |
+| bottom_volume | 底部放量 | 持续下跌后放量大阳线 |
+| box_oscillation | 箱体震荡 | 高低价区间内反复震荡 |
+| chan_theory | 缠论 | 中枢结构，MACD背驰判断 |
+| one_yang_three_yin | 一阳夹三阴 | 大阳-三阴-确认阳线模式 |
+| wave_theory | 波浪理论 | 艾略特波浪分析 |
+
+---
+
+### GET /strategies/{strategy_id}
+获取单个策略详情
+
+**路径参数**: `strategy_id` — 如 `bull_trend`, `ma_golden_cross`
+
+**响应**: 返回策略的完整元信息（描述、信号定义、适用市场环境等）
+
+---
+
+### POST /strategies/query
+执行策略查询
+
+**请求体**:\
+```json
+{
+  "strategy_id": "bottom_volume",
+  "trade_date": "2026-07-04",
+  "limit": 20,
+  "page": 1,
+  "page_size": 20
+}
+```
+
+**响应**:
+```json
+{
+  "strategy": { "id": "...", "name": "底部放量", ... },
+  "items": [
+    {
+      "symbol": "600519.SH",
+      "name": "贵州茅台",
+      "score": 78.5,
+      "signals": [{"name": "量比>3", "value": true}],
+      "match_reason": "持续下跌23日后放量阳线"
+    }
+  ],
+  "total": 42,
+  "stats": { "total_count": 42, "avg_trend_score": 72.3 }
+}
+```
+
+---
+
+### POST /strategies/analyze
+问股分析（9策略全量扫描）
+
+**请求体**:\
+```json
+{
+  "symbol": "600519.SH",
+  "trade_date": null   // 不传则用最近交易日
+}
+```
+
+**响应**: 返回该股票在全部 9 种策略下的分析结果，包括触发状态、评分、信号详情和匹配原因。
+
+---
+
 ## 接口统计
 
 | Tag | 方法数 | 路径前缀 |
@@ -798,17 +911,28 @@
 | Dashboard | 4 | /api/v1/dashboard |
 | Selection | 5 | /api/v1/selection |
 | Stocks | 9 | /api/v1/stocks |
-| Jobs | 9 | /api/v1/jobs |
+| Jobs | 13 | /api/v1/jobs |
 | Coverage | 3 | /api/v1/coverage |
 | Boards | 3 | /api/v1/boards |
 | Backfill | 2 | /api/v1/backfill |
 | System | 1 | /api/v1/system |
 | Watchlist | 4 | /api/v1/watchlist |
-| **总计** | **42** | |
+| Strategies | 4 | /api/v1/strategies |
+| **总计** | **50** | |
 
 ---
 
 ## Changelog
+
+### v0.5.0 (2026-07-07)
+- **重大重构**：ETL Engine 从 stock-fast-api 独立为子仓库 `stock-etl-engine`，APScheduler 调度逻辑迁移至独立服务
+- **新增** `POST /strategies/analyze` — 问股分析接口（9策略全量扫描）
+- **新增** `GET /strategies` — 获取全部选股策略列表
+- **新增** `GET /strategies/{strategy_id}` — 单个策略详情
+- **新增** `POST /strategies/query` — 按策略条件查询股票
+- **调整** Jobs 接口增加手动触发：`sync-new-ipo-boards`, `sync-board-relation-full`
+- **调整** ETL 调度时间：技术因子计算 → 23:00，选股宽表构建 → 23:30（原 22:30 / 23:00）
+- 复权因子同步、财务指标同步任务暂停
 
 ### v0.4.2
 - 优化定时任务调度时间配置
