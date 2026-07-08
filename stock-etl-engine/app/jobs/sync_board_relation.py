@@ -19,6 +19,7 @@ import baostock as bs
 import psycopg2
 from psycopg2.extras import execute_values
 from datetime import datetime
+from app.core.timezone import now
 import re
 import os
 import sys
@@ -45,7 +46,7 @@ QUERY_TIMEOUT = float(os.environ.get('SYNC_QUERY_TIMEOUT', '10'))
 # ========== 日志 ==========
 def setup_logging():
     os.makedirs(LOG_DIR, exist_ok=True)
-    log_file = os.path.join(LOG_DIR, f"sync_board_relation_{datetime.now().strftime('%Y%m%d')}.log")
+    log_file = os.path.join(LOG_DIR, f"sync_board_relation_{now().strftime('%Y%m%d')}.log")
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s [%(levelname)s] %(message)s',
@@ -149,7 +150,7 @@ def get_latest_trade_date(conn) -> str:
     """)
     row = cur.fetchone()
     cur.close()
-    return row[0].strftime('%Y-%m-%d') if row else datetime.now().strftime('%Y-%m-%d')
+    return row[0].strftime('%Y-%m-%d') if row else now().strftime('%Y-%m-%d')
 
 
 def upsert_board_relation(conn, records: list) -> int:
@@ -163,14 +164,14 @@ def upsert_board_relation(conn, records: list) -> int:
     VALUES %s
     ON CONFLICT (symbol, board_code) DO NOTHING
     """
-    now = datetime.now()
+    current_time = now()
     values = [
         (
             r['symbol'],
             r['board_code'],
             'INDUSTRY',
             'baostock',
-            now,
+            current_time,
         )
         for r in records
     ]

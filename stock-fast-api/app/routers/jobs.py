@@ -5,6 +5,8 @@ from app.core.deps import get_db
 from app.core.response import success_response, error_response
 from app.services.job_service import JobService
 from app.schemas.job import RunJobRequest
+from app.core.timezone import now as dt_now, CST
+import datetime
 import logging
 
 logger = logging.getLogger("stock_api")
@@ -35,9 +37,9 @@ def trigger_trade_calendar_sync(
     import datetime
 
     if end_date is None:
-        end_date = (datetime.datetime.now() + datetime.timedelta(days=365)).strftime('%Y-%m-%d')
+        end_date = (dt_now() + datetime.timedelta(days=365)).strftime('%Y-%m-%d')
     if start_date is None:
-        start_date = datetime.datetime.now().strftime('%Y-01-01')
+        start_date = dt_now().strftime('%Y-01-01')
 
     logger.info(f"【手动触发】交易日历同步 start={start_date} end={end_date}")
 
@@ -65,7 +67,7 @@ def trigger_daily_sync(
 ):
     import datetime
     if trade_date is None:
-        trade_date = datetime.datetime.now().strftime("%Y-%m-%d")
+        trade_date = dt_now().strftime("%Y-%m-%d")
 
     logger.info(f"【手动触发】日线同步 trade_date={trade_date}, force={force_restart}")
 
@@ -96,7 +98,7 @@ def trigger_financial_sync(
 
     # 默认同步当前季度
     if year is None or quarter is None:
-        now = datetime.datetime.now()
+        now = dt_now()
         month = now.month
         if month <= 3:
             quarter = 1
@@ -196,7 +198,7 @@ def trigger_adjust_factor_sync(
     import datetime
 
     if end_year is None:
-        end_year = datetime.datetime.now().year
+        end_year = dt_now().year
 
     logger.info(f"【手动触发】复权因子同步 {start_year}-{end_year}")
 
@@ -275,7 +277,7 @@ def trigger_new_ipo_boards_sync(
     logger.info(f"【手动触发】新股板块增量同步（近 {days} 天）")
 
     service = JobService(db)
-    job_id = service.init_job_run(f"new_ipo_board_sync_{days}days", datetime.datetime.now().strftime('%Y-%m-%d'))
+    job_id = service.init_job_run(f"new_ipo_board_sync_{days}days", dt_now().strftime('%Y-%m-%d'))
 
     result = service.trigger_etl(job_id, f"new_ipo_board_sync", str(days), False,
                                  params={"days": str(days)})
@@ -302,7 +304,7 @@ def trigger_board_relation_full_sync(
     logger.info("【手动触发】全量板块关系同步（efinance）")
 
     service = JobService(db)
-    job_id = service.init_job_run("board_relation_full_sync", datetime.datetime.now().strftime('%Y-%m-%d'))
+    job_id = service.init_job_run("board_relation_full_sync", dt_now().strftime('%Y-%m-%d'))
 
     result = service.trigger_etl(job_id, f"board_relation_full_sync", "", False)
     if result["code"] != 0:

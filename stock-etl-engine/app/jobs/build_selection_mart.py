@@ -38,6 +38,7 @@ import psycopg2
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
+from app.core.timezone import now
 import logging
 import os
 import argparse
@@ -52,7 +53,7 @@ DB_CONFIG = {
 }
 
 LOG_DIR = os.environ.get("SYNC_LOG_DIR", "/app/logs")
-LOG_FILE = os.path.join(LOG_DIR, f'build_selection_mart_{datetime.now().strftime("%Y%m%d")}.log')
+LOG_FILE = os.path.join(LOG_DIR, f'build_selection_mart_{now().strftime("%Y%m%d")}.log')
 
 # ========== 评分常量 ==========
 # 标准化范围 (min, max) - 用于 normalize_score
@@ -352,7 +353,7 @@ def upsert_selection_data(conn, df: pd.DataFrame, trade_date: str) -> int:
             'suspended_flag': row['suspended_flag'],
             'composite_score': row['composite_score'],
             'rank_pct': row['rank_pct'],
-            'updated_at': datetime.now(),
+            'updated_at': now(),
         })
 
     sql = """
@@ -431,8 +432,8 @@ def main():
 
     # 确定日期范围
     if args.full:
-        end_date = datetime.now().strftime('%Y-%m-%d')
-        start_date = (datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')
+        end_date = now().strftime('%Y-%m-%d')
+        start_date = (now() - timedelta(days=730)).strftime('%Y-%m-%d')
         logger.info(f"全量重算模式: {start_date} ~ {end_date}")
     elif args.date:
         start_date = args.date
@@ -444,8 +445,8 @@ def main():
         logger.info(f"日期范围模式: {start_date} ~ {end_date}")
     else:
         # 默认最近5个交易日
-        end_date = datetime.now().strftime('%Y-%m-%d')
-        start_date = (datetime.now() - timedelta(days=10)).strftime('%Y-%m-%d')
+        end_date = now().strftime('%Y-%m-%d')
+        start_date = (now() - timedelta(days=10)).strftime('%Y-%m-%d')
         logger.info(f"默认模式 (最近交易日): {start_date} ~ {end_date}")
 
     conn = get_db_connection()
@@ -460,7 +461,7 @@ def main():
     logger.info(f"待构建交易日数: {len(trade_dates)}")
 
     total_records = 0
-    start_time = datetime.now()
+    start_time = now()
 
     logger.info("=" * 60)
     logger.info("选股宽表构建开始")
@@ -487,7 +488,7 @@ def main():
             logger.info(f"  {trade_date}: 写入 {written} 条")
 
             if (idx + 1) % 10 == 0:
-                elapsed = (datetime.now() - start_time).total_seconds()
+                elapsed = (now() - start_time).total_seconds()
                 rate = (idx + 1) / elapsed
                 logger.info(f"进度: {idx+1}/{len(trade_dates)} ({rate:.1f}天/秒)")
 
@@ -496,7 +497,7 @@ def main():
             import traceback
             logger.error(traceback.format_exc())
 
-    elapsed = (datetime.now() - start_time).total_seconds()
+    elapsed = (now() - start_time).total_seconds()
     conn.close()
 
     logger.info("=" * 60)

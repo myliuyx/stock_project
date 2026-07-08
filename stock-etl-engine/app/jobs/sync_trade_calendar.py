@@ -26,6 +26,7 @@ import baostock as bs
 import psycopg2
 from psycopg2.extras import execute_values
 from datetime import datetime, timedelta
+from app.core.timezone import now
 import os
 import sys
 import logging
@@ -50,7 +51,7 @@ def setup_logging():
     os.makedirs(LOG_DIR, exist_ok=True)
     log_file = os.path.join(
         LOG_DIR,
-        f"sync_trade_calendar_{datetime.now().strftime('%Y%m%d')}.log"
+        f"sync_trade_calendar_{now().strftime('%Y%m%d')}.log"
     )
     logging.basicConfig(
         level=logging.INFO,
@@ -76,7 +77,7 @@ def sync_trade_calendar(start_date: str | None = None, end_date: str | None = No
     logger.info(f"【交易日历同步】开始 | start={start_date} end={end_date}")
 
     # 1. 确定同步区间
-    today = datetime.now()
+    today = now()
     if not end_date:
         end_date = (today + timedelta(days=365)).strftime('%Y-%m-%d')
     if not start_date:
@@ -163,7 +164,7 @@ def sync_trade_calendar(start_date: str | None = None, end_date: str | None = No
                         r.get('month_no'),
                         r.get('quarter_no'),
                         r.get('year_no'),
-                        datetime.now(),
+                        now(),
                     )
                     for r in all_records
                 ]

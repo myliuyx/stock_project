@@ -153,7 +153,7 @@ class WatchlistRepository:
         添加股票到自选股。
         返回 added_at 时间。
         """
-        added_at = datetime.now()
+        added_at = dt_now()
         sql = text("""
             INSERT INTO mart_user_watchlist (user_id, symbol, added_at)
             VALUES (:user_id, :symbol, :added_at)

@@ -1,6 +1,6 @@
 services:
   etl-engine:
-    image: stock-etl-engine:1.0.8
+    image: stock-etl-engine:1.0.9
     build:
       context: ../stock-etl-engine
       dockerfile: Dockerfile
@@ -19,6 +19,7 @@ services:
       - ETL_ENGINE_API_KEY=${ETL_ENGINE_API_KEY:-etl_secret_key_2026}
       - SYNC_START_YEAR=2026
       - SYNC_END_YEAR=2026
+      - TZ=Asia/Shanghai
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/')"]
       interval: 30s
@@ -27,7 +28,7 @@ services:
       start_period: 15s
 
   stock-api:
-    image: stock-api:0.8.12
+    image: stock-api:0.8.13
     build: .
     container_name: stock-api
     restart: always
@@ -45,6 +46,7 @@ services:
       - CORS_ORIGINS=${CORS_ORIGINS:-}
       - ETL_ENGINE_URL=http://etl-engine:8001/api/v1/trigger
       - ETL_ENGINE_API_KEY=${ETL_ENGINE_API_KEY:-etl_secret_key_2026}
+      - TZ=Asia/Shanghai
     depends_on:
       etl-engine:
         condition: service_healthy

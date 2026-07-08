@@ -24,6 +24,7 @@ import baostock as bs
 import psycopg2
 import pandas as pd
 from datetime import datetime, timedelta
+from app.core.timezone import now
 import time
 import logging
 import os
@@ -77,7 +78,7 @@ LOG_DIR = os.environ.get("SYNC_LOG_DIR", "/app/logs")
 # ========== 日志 ==========
 def setup_logging():
     os.makedirs(LOG_DIR, exist_ok=True)
-    log_file = os.path.join(LOG_DIR, f'sync_stock_daily_{datetime.now().strftime("%Y%m%d")}.log')
+    log_file = os.path.join(LOG_DIR, f'sync_stock_daily_{now().strftime("%Y%m%d")}.log')
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.INFO)
     logger.propagate = False
@@ -103,7 +104,7 @@ def init_job_run(conn, job_name: str, biz_date: str) -> int:
         INSERT INTO etl_job_run (job_name, biz_date, status, start_time, rows_raw, rows_written, created_at)
         VALUES (%s, %s, 'RUNNING', %s, 0, 0, %s)
         RETURNING id
-    """, (job_name, biz_date, datetime.now(), datetime.now()))
+    """, (job_name, biz_date, now(), now()))
     job_id = cursor.fetchone()[0]
     conn.commit()
     cursor.close()
@@ -117,7 +118,7 @@ def add_job_log(conn, job_id: int, level: str, message: str):
     cursor = conn.cursor()
     cursor.execute(
         "INSERT INTO etl_job_run_log (job_id, level, message, created_at) VALUES (%s, %s, %s, %s)",
-        (job_id, level, message, datetime.now()),
+        (job_id, level, message, now()),
     )
     conn.commit()
     cursor.close()
@@ -149,7 +150,7 @@ def update_job_run(conn, job_id: int, status: str = None, rows_raw: int = None,
     # COMPLETED 或 FAILED 时记录结束时间
     if status in ('COMPLETED', 'FAILED'):
         updates.append("end_time = %s")
-        params.append(datetime.now())
+        params.append(now())
     
     if updates:
         cursor.execute(f"""
@@ -184,7 +185,7 @@ def save_checkpoint(conn, job_name: str, last_index: int, last_symbol: str,
             ON CONFLICT (job_name, checkpoint_key) DO UPDATE SET
                 checkpoint_value = EXCLUDED.checkpoint_value,
                 updated_at = EXCLUDED.updated_at
-        """, (job_name, key, value, datetime.now()))
+        """, (job_name, key, value, now()))
     
     conn.commit()
     cursor.close()
@@ -481,11 +482,11 @@ def _do_fetch_financial_from_baostock(baostock_code: str) -> Dict:
     """实际的 Baostock 财务数据查询（供 run_with_timeout 调用）"""
     eps_ttm = total_share = liqa_share = roe_avg = mb_revenue = None
     
-    year = datetime.now().year - 1
-    for y in range(year, datetime.now().year + 1):
+    year = now().year - 1
+    for y in range(year, now().year + 1):
         for q in ["1", "2", "3", "4"]:
-            if y >= datetime.now().year:
-                m = datetime.now().month
+            if y >= now().year:
+                m = now().month
                 if q == "4" or (q == "3" and m < 10) or (q == "2" and m < 7) or (q == "1" and m < 4):
                     continue
             try:
@@ -633,8 +634,8 @@ def calculate_derived_fields(
     df['volume_ratio'] = None
     
     df['source'] = 'baostock'
-    df['created_at'] = datetime.now()
-    df['updated_at'] = datetime.now()
+    df['created_at'] = now()
+    df['updated_at'] = now()
     df['suspended_flag'] = df['tradestatus'].apply(lambda x: str(x) == '0')  # tradestatus='0'停牌=True, '1'交易=False
     
     return df
@@ -710,8 +711,8 @@ def process_single_stock(
                 'pb': float(row['pb']) if row.get('pb') is not None and not pd.isna(row['pb']) else None,
                 'ps_ttm': float(row['ps_ttm']) if row.get('ps_ttm') is not None and not pd.isna(row['ps_ttm']) else None,
                 'source': 'baostock',
-                'created_at': datetime.now(),
-                'updated_at': datetime.now()
+                'created_at': now(),
+                'updated_at': now()
             })
         
         time.sleep(SYNC_CONFIG['rate_limit_delay'])
@@ -807,8 +808,8 @@ def sync_stock_daily(force_restart: bool = False, start_date: str = None, end_da
     else:
         job_name = SYNC_CONFIG['job_name']
 
-    biz_date = end_date or datetime.now().strftime('%Y-%m-%d')
-    start_time_dt = datetime.now()  # 记录开始时间（用于日志展示）
+    biz_date = end_date or now().strftime('%Y-%m-%d')
+    start_time_dt = now()  # 记录开始时间（用于日志展示）
     start_ts = time.time()          # 记录开始时间戳（用于超时检查 + 进度计算）
     max_sync_seconds = MAX_SYNC_HOURS * 3600  # 最大执行秒数（4h）
     job_id = None  # 任务 ID，初始化为 None，避免 except 块中未定义
@@ -894,12 +895,12 @@ def sync_stock_daily(force_restart: bool = False, start_date: str = None, end_da
         if end_date:
             end_date_str = end_date
         else:
-            end_date_str = datetime.now().strftime('%Y-%m-%d')
+            end_date_str = now().strftime('%Y-%m-%d')
         
         if start_date:
             start_date_str = start_date
         else:
-            start_date_str = (datetime.now() - timedelta(days=SYNC_CONFIG['data_days'])).strftime('%Y-%m-%d')
+            start_date_str = (now() - timedelta(days=SYNC_CONFIG['data_days'])).strftime('%Y-%m-%d')
         
         logger.info(f"数据范围: {start_date_str} ~ {end_date_str}")
         
@@ -1138,7 +1139,7 @@ def sync_stock_daily(force_restart: bool = False, start_date: str = None, end_da
         logger.info(f"📊 最终进度报告: {total_processed}/{total_stocks} ({'100' if stocks_success + stocks_skipped + stocks_failed >= total_stocks else total_processed*100//max(total_stocks,1)}%), "
                     f"速率={rate:.1f}只/分钟, 总用时={elapsed_min:.0f}min")
 
-        elapsed = (datetime.now() - start_time_dt).total_seconds()
+        elapsed = (now() - start_time_dt).total_seconds()
         logger.info("\n" + "="*60)
         logger.info(f"✅ 同步完成!")
         logger.info(f"总耗时: {elapsed:.1f}秒 ({elapsed/60:.1f}分钟)")

@@ -20,6 +20,7 @@ import baostock as bs
 import psycopg2
 from psycopg2.extras import execute_values
 from datetime import datetime
+from app.core.timezone import now
 import re
 import os
 import sys
@@ -47,7 +48,7 @@ QUERY_TIMEOUT = float(os.environ.get('SYNC_QUERY_TIMEOUT', '10'))  # 单次查�
 # ========== 日志 ==========
 def setup_logging():
     os.makedirs(LOG_DIR, exist_ok=True)
-    log_file = os.path.join(LOG_DIR, f"sync_board_{datetime.now().strftime('%Y%m%d')}.log")
+    log_file = os.path.join(LOG_DIR, f"sync_board_{now().strftime('%Y%m%d')}.log")
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s [%(levelname)s] %(message)s',
@@ -152,7 +153,7 @@ def upsert_board_master(conn, records: list) -> int:
         source = EXCLUDED.source,
         updated_at = EXCLUDED.updated_at
     """
-    now = datetime.now()
+    current_time = now()
     values = [
         (
             r['board_code'],
@@ -160,7 +161,7 @@ def upsert_board_master(conn, records: list) -> int:
             r['board_type'],
             True,
             'baostock',
-            now,
+            current_time,
         )
         for r in records
     ]

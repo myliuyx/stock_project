@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from app.core.timezone import now
 import logging
 import os
 import fcntl
@@ -60,7 +61,7 @@ def cleanup_old_logs():
         return
 
     log_dir_real = os.path.realpath(LOG_DIR)
-    cutoff = datetime.now() - timedelta(days=LOG_KEEP_DAYS)
+    cutoff = now() - timedelta(days=LOG_KEEP_DAYS)
     removed = 0
     for fname in os.listdir(LOG_DIR):
         if not fname.endswith(".log"):
@@ -94,7 +95,7 @@ def run_cleanup_logs_job(task_id: int, job_name: str, biz_date: str | None, forc
 
 def is_trade_day() -> bool:
     """检查今天是否是交易日（使用原生 psycopg2 连接）"""
-    today = datetime.now().strftime('%Y-%m-%d')
+    today = now().strftime('%Y-%m-%d')
     try:
         conn = psycopg2.connect(**DB_CONFIG)
         cursor = conn.cursor()
@@ -122,14 +123,14 @@ def run_daily_sync():
     from app.jobs.sync_stock_daily import sync_stock_daily
 
     logger.info("=" * 60)
-    logger.info(f"【定时任务】日线行情同步开始 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"【定时任务】日线行情同步开始 {now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     if not is_trade_day():
         logger.info("跳过非交易日")
         return
 
     try:
-        today = datetime.now().strftime('%Y-%m-%d')
+        today = now().strftime('%Y-%m-%d')
         sync_stock_daily(force_restart=False, start_date=today, end_date=today)
         logger.info(f"【定时任务】日线行情同步完成")
     except Exception as e:
@@ -143,7 +144,7 @@ def run_factor_compute():
     import sys
 
     logger.info("=" * 60)
-    logger.info(f"【定时任务】技术因子计算开始 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"【定时任务】技术因子计算开始 {now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     if not is_trade_day():
         logger.info("跳过非交易日")
@@ -164,7 +165,7 @@ def run_selection_mart():
     import sys
 
     logger.info("=" * 60)
-    logger.info(f"【定时任务】选股宽表构建开始 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"【定时任务】选股宽表构建开始 {now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     if not is_trade_day():
         logger.info("跳过非交易日")
@@ -183,7 +184,7 @@ def run_selection_mart():
 def run_security_master_sync():
     from app.jobs.sync_security_master import main as sync_security_master_main
     logger.info("=" * 60)
-    logger.info(f"【定时任务】股票主数据同步开始 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"【定时任务】股票主数据同步开始 {now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     if not is_trade_day():
         logger.info("跳过非交易日（主数据更新）")
@@ -201,7 +202,7 @@ def run_security_master_sync():
 def run_new_ipo_board_sync():
     from app.jobs.sync_new_ipo_boards import sync_new_ipo_boards
     logger.info("=" * 60)
-    logger.info(f"【定时任务】新股板块增量同步开始 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"【定时任务】新股板块增量同步开始 {now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     if not is_trade_day():
         logger.info("跳过非交易日")
@@ -219,7 +220,7 @@ def run_new_ipo_board_sync():
 def run_adjust_factor_sync():
     from app.jobs.sync_adjust_factor import main as adjust_factor_main
     logger.info("=" * 60)
-    logger.info(f"【定时任务】复权因子同步开始 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"【定时任务】复权因子同步开始 {now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     if not is_trade_day():
         logger.info("跳过非交易日")
@@ -237,11 +238,11 @@ def run_adjust_factor_sync():
 def run_financial_indicator_sync():
     from app.jobs.etl_financial_indicator import main as financial_main
     logger.info("=" * 60)
-    logger.info(f"【定时任务】财务指标同步开始 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"【定时任务】财务指标同步开始 {now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     try:
-        now = datetime.now()
-        if now.month <= 3:
+        current = now()
+        if current.month <= 3:
             year, quarter = now.year, 1
         elif now.month <= 6:
             year, quarter = now.year, 2

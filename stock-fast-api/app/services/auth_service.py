@@ -23,7 +23,7 @@ class AuthService:
         if not self.repo.verify_password(password, user["password_hash"]):
             return None
 
-        expire = datetime.utcnow() + timedelta(hours=settings.JWT_EXPIRE_HOURS)
+        expire = now() + timedelta(hours=settings.JWT_EXPIRE_HOURS)
         payload = {"sub": str(user["id"]), "exp": expire}
         token = jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 

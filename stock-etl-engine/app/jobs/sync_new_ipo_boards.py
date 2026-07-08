@@ -22,6 +22,7 @@ ETL Script: 增量同步新股板块数据
 import psycopg2
 from psycopg2.extras import execute_values
 from datetime import datetime, timedelta
+from app.core.timezone import now
 import re
 import os
 import sys
@@ -80,7 +81,7 @@ def _infer_board_type(name: str) -> str:
 # ========== 日志 ==========
 def setup_logging():
     os.makedirs(LOG_DIR, exist_ok=True)
-    log_file = os.path.join(LOG_DIR, f"sync_new_ipo_boards_{datetime.now().strftime('%Y%m%d')}.log")
+    log_file = os.path.join(LOG_DIR, f"sync_new_ipo_boards_{now().strftime('%Y%m%d')}.log")
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s [%(levelname)s] %(message)s',
@@ -96,12 +97,12 @@ def setup_logging():
 def init_job_run(conn, biz_date: str = None) -> int:
     """创建任务记录，返回 job_id"""
     cursor = conn.cursor()
-    now = datetime.now()
+    current_time = now()
     cursor.execute("""
         INSERT INTO etl_job_run (job_name, biz_date, status, start_time, rows_raw, rows_written, created_at)
         VALUES (%s, %s, 'RUNNING', %s, 0, 0, %s)
         RETURNING id
-    """, ('new_ipo_board_sync', biz_date or now.strftime('%Y-%m-%d'), now, now))
+    """, ('new_ipo_board_sync', biz_date or current_time.strftime('%Y-%m-%d'), current_time, current_time))
     job_id = cursor.fetchone()[0]
     conn.commit()
     cursor.close()
@@ -194,8 +195,8 @@ def upsert_board_master(conn, records: list) -> int:
         source = EXCLUDED.source,
         updated_at = NOW()
     """
-    now = datetime.now()
-    values = [(r['code'], r['name'], r['type'], 'efinance', now) for r in records if r.get('code')]
+    current_time = now()
+    values = [(r['code'], r['name'], r['type'], 'efinance', current_time) for r in records if r.get('code')]
     for i in range(0, len(values), BATCH_SIZE):
         execute_values(cur, sql, values[i:i + BATCH_SIZE])
         conn.commit()
@@ -215,8 +216,8 @@ def upsert_board_relation(conn, symbol: str, records: list) -> int:
     INSERT INTO dwd_board_relation (symbol, board_code, board_type, relation_source, updated_at)
     VALUES %s
     """
-    now = datetime.now()
-    values = [(symbol, r['code'], r['type'], 'efinance', now) for r in records if r.get('code') and r.get('type')]
+    current_time = now()
+    values = [(symbol, r['code'], r['type'], 'efinance', current_time) for r in records if r.get('code') and r.get('type')]
     if not values:
         cur.close()
         return 0
@@ -230,11 +231,11 @@ def upsert_board_relation(conn, symbol: str, records: list) -> int:
 # ========== 主逻辑 ==========
 def sync_new_ipo_boards(days: int = 7) -> dict:
     logger = setup_logging()
-    now = datetime.now()
+    current_time = now()
 
     # Step 1: 创建任务记录（status=RUNNING）
     conn = psycopg2.connect(**DB_CONFIG)
-    job_id = init_job_run(conn, biz_date=now.strftime('%Y-%m-%d'))
+    job_id = init_job_run(conn, biz_date=current_time.strftime('%Y-%m-%d'))
     logger.info(f"【新股板块增量同步】开始（近 {days} 天，job_id={job_id}）")
 
     new_stocks = get_new_ipo_symbols(conn, days)
