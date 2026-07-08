@@ -6,12 +6,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    TZ=Asia/Shanghai \
     PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
     PIP_MIRROR=https://pypi.tuna.tsinghua.edu.cn/simple
 
 COPY requirements.txt .
-# 使用国内镜像加速，多线程安装
-RUN pip install --root-user-action=ignore -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+# 安装 tzdata 配置时区 + pip 依赖
+RUN apt-get update -qq && apt-get install -y --no-install-recommends tzdata && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone && \
+    pip install --root-user-action=ignore -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple && \
+    rm -rf /var/lib/apt/lists/*
 
 # ===== 运行阶段 =====
 FROM python:3.11-slim
