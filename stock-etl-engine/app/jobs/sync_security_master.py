@@ -13,7 +13,8 @@ ETL Script: 从 Baostock 同步 dwd_security_master 股票主数据
 import baostock as bs
 import psycopg2
 from psycopg2.extras import execute_values
-from datetime import datetime
+from datetime import datetime, timedelta
+from app.core.timezone import now
 import time
 import re
 import os
@@ -38,7 +39,7 @@ LOG_DIR = os.environ.get('SYNC_LOG_DIR', '/app/logs')
 
 def setup_logging():
     os.makedirs(LOG_DIR, exist_ok=True)
-    log_file = os.path.join(LOG_DIR, f'sync_security_master_{datetime.now().strftime("%Y%m%d")}.log')
+    log_file = os.path.join(LOG_DIR, f'sync_security_master_{now().strftime("%Y%m%d")}.log')
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s [%(levelname)s] %(message)s',
@@ -197,7 +198,7 @@ def main():
     sys.stderr.reconfigure(line_buffering=True)
 
     logger = setup_logging()
-    start_time = datetime.now()
+    start_time = now()
 
     logger.info("=" * 70)
     logger.info("  股票主数据同步")
@@ -236,7 +237,7 @@ def main():
                 'status': status,
                 'is_st': is_st(name),
                 'source': 'baostock',
-                'updated_at': datetime.now(),
+                'updated_at': now(),
             })
 
         logger.info(f"  获取股票总数: {len(stocks)} (在市 {(sum(1 for s in stocks if s['status']=='LISTED'))} 只)")
@@ -303,7 +304,7 @@ def main():
         cur2.close()
         conn2.close()
 
-        elapsed = (datetime.now() - start_time).total_seconds()
+        elapsed = (now() - start_time).total_seconds()
         logger.info("\n=== 验证结果 ===")
         logger.info(f"  总记录数: {total}")
         logger.info(f"  在市(LISTED): {listed}")

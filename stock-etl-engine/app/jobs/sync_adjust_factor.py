@@ -27,6 +27,7 @@ import psycopg2
 from psycopg2.extras import execute_values
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime, date, timedelta
+from app.core.timezone import now
 import time
 import os
 import sys
@@ -53,7 +54,7 @@ LOG_DIR = os.environ.get('SYNC_LOG_DIR', '/app/logs')
 def setup_logging():
     """配置日志，直接添加 handler（不依赖 basicConfig，避免 uvicorn 已有 handler 导致失效）"""
     os.makedirs(LOG_DIR, exist_ok=True)
-    log_file = os.path.join(LOG_DIR, f'sync_adjust_factor_{datetime.now().strftime("%Y%m%d")}.log')
+    log_file = os.path.join(LOG_DIR, f'sync_adjust_factor_{now().strftime("%Y%m%d")}.log')
     logger = logging.getLogger('sync_adjust_factor')
 
     formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
@@ -226,7 +227,7 @@ def main(task_id: int = None):
     sys.stderr.reconfigure(line_buffering=True)
 
     logger = setup_logging()
-    start_time = datetime.now()
+    start_time = now()
 
     logger.info("=" * 70)
     logger.info("  复权因子同步 (dwd_stock_adjust_factor)")
@@ -362,7 +363,7 @@ def main(task_id: int = None):
                         stock if stock > 0 else None,
                         event_type,
                         'baostock',
-                        datetime.now(),
+                        now(),
                     ))
 
                 # 4. Upsert
@@ -379,7 +380,7 @@ def main(task_id: int = None):
                     pass
 
             # 进度输出
-            elapsed = (datetime.now() - start_time).total_seconds()
+            elapsed = (now() - start_time).total_seconds()
             rate = total_written / elapsed if elapsed > 0 else 0
             if (idx + 1) % 100 == 0 or idx == total_stocks - 1:
                 logger.info(
@@ -391,7 +392,7 @@ def main(task_id: int = None):
 
         conn.close()
 
-        elapsed = (datetime.now() - start_time).total_seconds()
+        elapsed = (now() - start_time).total_seconds()
         logger.info("-" * 70)
         logger.info(f"[同步完成] 总耗时: {elapsed:.1f}秒 ({elapsed/60:.1f}分钟)")
         logger.info(f"  总写入: {total_written} 条")

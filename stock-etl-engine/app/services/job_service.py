@@ -89,7 +89,8 @@ class JobService:
 
         if job_name.startswith("daily_kline"):
             from app.jobs.sync_stock_daily import sync_stock_daily
-            trade_date = biz_date or datetime.datetime.now().strftime('%Y-%m-%d')
+            from app.core.timezone import now as dt_now
+            trade_date = biz_date or dt_now().strftime('%Y-%m-%d')
             try:
                 sync_stock_daily(force_restart=force, start_date=trade_date, end_date=trade_date, task_id=task_id)
                 self.update_job_run(task_id, "COMPLETED")

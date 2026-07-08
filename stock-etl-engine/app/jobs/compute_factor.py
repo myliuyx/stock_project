@@ -31,6 +31,7 @@ import psycopg2
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
+from app.core.timezone import now
 import logging
 import os
 import argparse
@@ -45,7 +46,7 @@ DB_CONFIG = {
 }
 
 LOG_DIR = os.environ.get("SYNC_LOG_DIR", "/app/logs")
-LOG_FILE = os.path.join(LOG_DIR, f'compute_factor_{datetime.now().strftime("%Y%m%d")}.log')
+LOG_FILE = os.path.join(LOG_DIR, f'compute_factor_{now().strftime("%Y%m%d")}.log')
 
 
 def setup_logging():
@@ -262,7 +263,7 @@ def upsert_factors(conn, df: pd.DataFrame, trade_date: str) -> int:
             'is_new_high_60d': bool(row['is_new_high_60d']) if pd.notna(row['is_new_high_60d']) else False,
             'is_break_ma20': bool(row['is_break_ma20']) if pd.notna(row['is_break_ma20']) else False,
             'trend_score': round(row['trend_score'], 4) if pd.notna(row['trend_score']) else None,
-            'updated_at': datetime.now(),
+            'updated_at': now(),
         })
 
     cursor = conn.cursor()
@@ -339,8 +340,8 @@ def main():
     # 确定日期范围
     if args.full:
         # 全量重算：取最近2年
-        end_date = datetime.now().strftime('%Y-%m-%d')
-        start_date = (datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')
+        end_date = now().strftime('%Y-%m-%d')
+        start_date = (now() - timedelta(days=730)).strftime('%Y-%m-%d')
         logger.info(f"全量重算模式: {start_date} ~ {end_date}")
     elif args.date:
         start_date = args.date
@@ -352,8 +353,8 @@ def main():
         logger.info(f"日期范围模式: {start_date} ~ {end_date}")
     else:
         # 默认计算最近5个交易日
-        end_date = datetime.now().strftime('%Y-%m-%d')
-        start_date = (datetime.now() - timedelta(days=10)).strftime('%Y-%m-%d')
+        end_date = now().strftime('%Y-%m-%d')
+        start_date = (now() - timedelta(days=10)).strftime('%Y-%m-%d')
         logger.info(f"默认模式 (最近交易日): {start_date} ~ {end_date}")
 
     conn = get_db_connection()
@@ -373,7 +374,7 @@ def main():
     logger.info(f"待计算股票数: {total_stocks}")
 
     total_records = 0
-    start_time = datetime.now()
+    start_time = now()
 
     logger.info("=" * 60)
     logger.info("技术因子计算开始")
@@ -390,14 +391,14 @@ def main():
                         total_records += written
 
             if (idx + 1) % 500 == 0:
-                elapsed = (datetime.now() - start_time).total_seconds()
+                elapsed = (now() - start_time).total_seconds()
                 rate = (idx + 1) / elapsed
                 logger.info(f"进度: {idx+1}/{total_stocks} ({rate:.1f}只/秒)")
 
         except Exception as e:
             logger.warning(f"处理 {symbol} 时出错: {e}")
 
-    elapsed = (datetime.now() - start_time).total_seconds()
+    elapsed = (now() - start_time).total_seconds()
     conn.close()
 
     logger.info("=" * 60)

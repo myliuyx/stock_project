@@ -23,6 +23,7 @@ import baostock as bs
 import psycopg2
 from psycopg2.extras import execute_values
 from datetime import datetime, date
+from app.core.timezone import now
 import time
 import os
 import sys
@@ -333,7 +334,7 @@ def main():
     total_records = 0
     error_count = 0
     skip_count = 0
-    start_time = datetime.now()
+    start_time = now()
 
     print(f'\n[开始同步]', flush=True)
     print('-' * 70, flush=True)
@@ -454,7 +455,7 @@ def main():
                 time.sleep(0.05)
 
         # 每只股票完成后的日志
-        elapsed = (datetime.now() - start_time).total_seconds()
+        elapsed = (now() - start_time).total_seconds()
         rate = total_records / elapsed if elapsed > 0 else 0
         print(f'  [{idx+1:4d}/{total_stocks}] {symbol}: 新增{stock_records}条 跳过{stock_skip}条 | '
               f'累计{total_records}条 错误{error_count}条 | {rate:.1f}条/秒', flush=True)
@@ -462,7 +463,7 @@ def main():
     conn.close()
     bs.logout()
 
-    elapsed = (datetime.now() - start_time).total_seconds()
+    elapsed = (now() - start_time).total_seconds()
     print('-' * 70)
     print('[同步完成]')
     print(f'  总耗时: {elapsed:.1f}秒 ({elapsed/60:.1f}分钟)')
