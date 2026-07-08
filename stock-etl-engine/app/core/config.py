@@ -22,7 +22,7 @@ DB_CONFIG = {
 LOG_DIR = os.environ.get("SYNC_LOG_DIR", "/app/logs")
 ETL_API_PORT = _get_int_env("ETL_API_PORT", 8082)
 ETL_API_KEY = os.environ.get("ETL_ENGINE_API_KEY", "")
-ETL_VERSION = "1.0.9"
+ETL_VERSION = "1.1.0"
 
 
 def validate_config():
