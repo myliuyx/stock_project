@@ -59,10 +59,10 @@ const MANUAL_TASKS = [
 
 // 定时任务（可手动触发）
 const SCHEDULED_TASKS = [
-  { jobName: 'security_master_sync', label: '股票主数据同步', time: '周一至周五 18:00' },
+  { jobName: 'security_master_sync', label: '股票主数据同步', time: '周一至周五 17:30' },
   { jobName: 'daily_kline_sync', label: '日线行情同步', time: '周一至周五 19:00' },
-  { jobName: 'factor_compute', label: '技术因子计算', time: '周一至周五 22:30' },
-  { jobName: 'selection_mart', label: '选股宽表构建', time: '周一至周五 23:00' },
+  { jobName: 'factor_compute', label: '技术因子计算', time: '周一至周五 23:00' },
+  { jobName: 'selection_mart', label: '选股宽表构建', time: '周一至周五 23:30' },
   { jobName: 'cleanup_logs', label: '日志清理', time: '每天 00:05' },
 ]
 
