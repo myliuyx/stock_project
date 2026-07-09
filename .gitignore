@@ -35,6 +35,9 @@ Thumbs.db
 .coverage
 htmlcov/
 
+# Project test directories (local tests, not for sharing)
+stock-etl-engine/test/
+
 # Logs
 *.log
 logs/

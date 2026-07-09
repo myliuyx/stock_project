@@ -25,7 +25,7 @@ def acquire_scheduler_lock() -> bool:
     global _scheduler_lock_fd
     try:
         _scheduler_lock_fd = open(SCHEDULER_LOCK_FILE, 'w')
-        fcntl.flock(_scheduler_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(_scheduler_lock_fd, fcntl.LOCK_EX | LOCK_NB)
         _scheduler_lock_fd.write(str(os.getpid()))
         _scheduler_lock_fd.flush()
         return True
@@ -79,6 +79,83 @@ def cleanup_old_logs():
             removed += 1
     if removed:
         logger.info(f"已清理 {removed} 个过期日志文件（保留最近 {LOG_KEEP_DAYS} 天）")
+
+
+# ──────────────────────── etl_job_run 辅助函数（供 APScheduler 定时触发使用）
+
+def _create_job_record(job_name: str, biz_date: str | None = None) -> int | None:
+    """在 etl_job_run 表插入一条 RUNNING 记录，返回 job_id；失败则返回 None。"""
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cur = conn.cursor()
+        current_time = now()
+        biz_date = biz_date or current_time.strftime('%Y-%m-%d')
+        cur.execute("""
+            INSERT INTO etl_job_run (job_name, biz_date, status, start_time, created_at, rows_raw, rows_written)
+            VALUES (%s, %s, 'RUNNING', %s, %s, 0, 0)
+            RETURNING id
+        """, (job_name, biz_date, current_time, current_time))
+        job_id = cur.fetchone()[0]
+        conn.commit()
+        cur.close()
+        conn.close()
+        return job_id
+    except Exception as e:
+        logger.error(f"创建任务记录失败 ({job_name}): {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        try:
+            if 'conn' in locals():
+                conn.close()
+        except Exception:
+            pass
+        return None
+
+
+def _complete_job_record(job_id: int, status: str = "COMPLETED", rows_written: int | None = None, error_message: str | None = None):
+    """更新 etl_job_run 状态，自动计算 duration_ms。"""
+    if job_id is None:
+        return
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cur = conn.cursor()
+        updates = ["status = %s", "end_time = NOW()", "rows_written = COALESCE(%s, rows_written)"]
+        params = [status, rows_written if rows_written is not None else 0]
+
+        # COMPLETED / FAILED 时自动计算 duration_ms
+        if status in ("COMPLETED", "FAILED"):
+            updates.append("duration_ms = EXTRACT(EPOCH FROM (NOW() - start_time))::bigint * 1000")
+
+        if error_message:
+            updates.append("error_message = %s")
+            params.append(error_message)
+
+        sql = f"UPDATE etl_job_run SET {', '.join(updates)} WHERE id = %s"
+        params.append(job_id)
+        cur.execute(sql, tuple(params))
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        logger.error(f"更新任务记录失败 (job_id={job_id}): {e}")
+
+
+def _wrap_job_for_record(func, job_name: str):
+    """包装定时任务函数：自动创建/更新 etl_job_run 记录。"""
+    def wrapper():
+        job_id = _create_job_record(job_name)
+        try:
+            func()
+            _complete_job_record(job_id, "COMPLETED", 0)
+        except SystemExit as e:
+            _complete_job_record(job_id, "FAILED", error_message=f"Job called sys.exit({e.code})")
+            raise
+        except Exception as e:
+            _complete_job_record(job_id, "FAILED", error_message=str(e))
+            # re-raise so safe_wrapper can log it too
+
+    wrapper.__name__ = func.__name__
+    return wrapper
 
 
 def run_cleanup_logs_job(task_id: int, job_name: str, biz_date: str | None, force: bool):
@@ -141,7 +218,6 @@ def run_daily_sync():
 
 def run_factor_compute():
     from app.jobs.compute_factor import main as factor_main
-    import sys
 
     logger.info("=" * 60)
     logger.info(f"【定时任务】技术因子计算开始 {now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -151,7 +227,6 @@ def run_factor_compute():
         return
 
     try:
-        sys.argv = ['compute_factor.py']
         factor_main()
         logger.info(f"【定时任务】技术因子计算完成")
     except Exception as e:
@@ -162,7 +237,6 @@ def run_factor_compute():
 
 def run_selection_mart():
     from app.jobs.build_selection_mart import main as selection_main
-    import sys
 
     logger.info("=" * 60)
     logger.info(f"【定时任务】选股宽表构建开始 {now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -172,7 +246,6 @@ def run_selection_mart():
         return
 
     try:
-        sys.argv = ['build_selection_mart.py']
         selection_main()
         logger.info(f"【定时任务】选股宽表构建完成")
     except Exception as e:
@@ -183,6 +256,7 @@ def run_selection_mart():
 
 def run_security_master_sync():
     from app.jobs.sync_security_master import main as sync_security_master_main
+
     logger.info("=" * 60)
     logger.info(f"【定时任务】股票主数据同步开始 {now().strftime('%Y-%m-%d %H:%M:%S')}")
 
@@ -201,6 +275,7 @@ def run_security_master_sync():
 
 def run_new_ipo_board_sync():
     from app.jobs.sync_new_ipo_boards import sync_new_ipo_boards
+
     logger.info("=" * 60)
     logger.info(f"【定时任务】新股板块增量同步开始 {now().strftime('%Y-%m-%d %H:%M:%S')}")
 
@@ -219,6 +294,7 @@ def run_new_ipo_board_sync():
 
 def run_adjust_factor_sync():
     from app.jobs.sync_adjust_factor import main as adjust_factor_main
+
     logger.info("=" * 60)
     logger.info(f"【定时任务】复权因子同步开始 {now().strftime('%Y-%m-%d %H:%M:%S')}")
 
@@ -237,6 +313,7 @@ def run_adjust_factor_sync():
 
 def run_financial_indicator_sync():
     from app.jobs.etl_financial_indicator import main as financial_main
+
     logger.info("=" * 60)
     logger.info(f"【定时任务】财务指标同步开始 {now().strftime('%Y-%m-%d %H:%M:%S')}")
 
@@ -319,14 +396,17 @@ def create_scheduler() -> BackgroundScheduler:
             max_instances=1,
         )
 
+    # run_security_master_sync 不自管理 etl_job_run，需包装记录创建
     add_safe_job(
-        run_security_master_sync, "security_master_sync", "股票主数据同步",
-        trigger=CronTrigger(hour=18, minute=0, day_of_week="0-4", timezone='Asia/Shanghai'),
+        _wrap_job_for_record(run_security_master_sync, "security_master_sync"),
+        "security_master_sync", "股票主数据同步",
+        trigger=CronTrigger(hour=17, minute=30, day_of_week="0-4", timezone='Asia/Shanghai'),
     )
 
+    # new_ipo_board_sync 自管理 etl_job_run，不需额外包装
     add_safe_job(
         run_new_ipo_board_sync, "new_ipo_board_sync", "新股板块增量同步",
-        trigger=CronTrigger(day_of_week="0-4", hour=17, minute=30, timezone='Asia/Shanghai'),  # Before security_master at 18:00
+        trigger=CronTrigger(day_of_week="0-4", hour=17, minute=10, timezone='Asia/Shanghai'),  # Before security_master at 17:30
     )
 
     # 已暂停：复权因子同步（暂不执行）
@@ -341,27 +421,29 @@ def create_scheduler() -> BackgroundScheduler:
     #     trigger=CronTrigger(hour=21, minute=30, day_of_week="0-4", timezone='Asia/Shanghai'),  # Before factor_compute at 22:30
     # )
 
+    # run_daily_sync (sync_stock_daily) 自管理 etl_job_run，不需额外包装
     add_safe_job(
         run_daily_sync, "daily_stock_sync", "日线行情同步",
         trigger=CronTrigger(hour=19, minute=0, day_of_week="0-4", timezone='Asia/Shanghai'),
     )
 
+    # run_factor_compute / run_selection_mart / cleanup_old_logs 不自管理 etl_job_run，需包装记录创建
     add_safe_job(
-        run_factor_compute, "factor_compute", "技术因子计算",
+        _wrap_job_for_record(run_factor_compute, "factor_compute"),
+        "factor_compute", "技术因子计算",
         trigger=CronTrigger(hour=23, minute=0, day_of_week="0-4", timezone='Asia/Shanghai'),
     )
 
     add_safe_job(
-        run_selection_mart, "selection_mart", "选股宽表构建",
+        _wrap_job_for_record(run_selection_mart, "selection_mart"),
+        "selection_mart", "选股宽表构建",
         trigger=CronTrigger(hour=23, minute=30, day_of_week="0-4", timezone='Asia/Shanghai'),
     )
 
-    scheduler.add_job(
-        func=cleanup_old_logs,
+    add_safe_job(
+        _wrap_job_for_record(cleanup_old_logs, "cleanup_logs"),
+        "cleanup_logs", "日志清理",
         trigger=CronTrigger(hour=0, minute=5, timezone='Asia/Shanghai'),
-        id="cleanup_logs",
-        name="日志清理",
-        replace_existing=True,
     )
 
     _active_scheduler = scheduler

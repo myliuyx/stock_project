@@ -11,6 +11,7 @@ ETL Script: 从 Baostock 同步 dwd_security_master 股票主数据
 - 幂等写入: ON CONFLICT (symbol) DO UPDATE
 """
 import baostock as bs
+import socket
 import psycopg2
 from psycopg2.extras import execute_values
 from datetime import datetime, timedelta
@@ -21,9 +22,11 @@ import os
 import sys
 import logging
 
+SOCKET_TIMEOUT = 30  # TCP 超时（秒）
+
 # ========== 配置 ==========
 DB_CONFIG = {
-    'host': os.environ.get('DB_HOST', '192.168.3.16'),
+    'host': os.environ.get('DB_HOST', '192.168.3.31'),
     'port': int(os.environ.get('DB_PORT', '5432')),
     'database': os.environ.get('DB_NAME', 'stock_cache_system'),
     'user': os.environ.get('DB_USER', 'postgres'),
