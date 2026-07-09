@@ -246,11 +246,12 @@ app/
 
 | 任务 ID | 执行时间（北京时间） | 说明 |
 |---------|---------------------|------|
-| `security_master_sync` | 工作日 18:00 | 同步股票主数据 |
-| `daily_stock_sync` | 工作日 19:00 | 同步日线行情 |
-| `factor_compute` | 工作日 20:30 | 计算技术指标 |
-| `selection_mart` | 工作日 21:30 | 构建选股宽表 |
-| `cleanup_logs` | 每日 00:05 | 清理超过3天的日志 |
+| `new_ipo_board_sync` | Mon-Fri 17:10 | 近7天上市新股及其所属板块 |
+| `security_master_sync` | Mon-Fri 17:30 | 同步股票主数据（代码、名称、行业） |
+| `daily_stock_sync` | Mon-Fri 19:00 | 同步日线行情 OHLCV |
+| `factor_compute` | Mon-Fri 23:00 | 计算 MA/RSI/MACD/BOLL 等技术指标 |
+| `selection_mart` | Mon-Fri 23:30 | 构建选股宽表（行情+因子+财务） |
+| `cleanup_logs` | 每日 00:05 | 清理超过3天的日志文件 |
 
 ### 文档
 
