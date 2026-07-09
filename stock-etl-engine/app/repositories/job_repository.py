@@ -197,6 +197,7 @@ class JobRepository:
         """更新 ETL 任务状态"""
         updates = ["status = :status", "end_time = NOW()"]
         params = {"job_id": job_id, "status": status}
+
         if rows_raw is not None:
             updates.append("rows_raw = :rows_raw")
             params["rows_raw"] = rows_raw
@@ -206,6 +207,12 @@ class JobRepository:
         if error_message is not None:
             updates.append("error_message = :error_message")
             params["error_message"] = error_message
+
+        # 自动计算 duration_ms（仅 COMPLETED / FAILED 状态）
+        if status in ("COMPLETED", "FAILED"):
+            updates.append(
+                "duration_ms = EXTRACT(EPOCH FROM (NOW() - start_time))::bigint * 1000"
+            )
 
         self.db.execute(
             text(f"UPDATE etl_job_run SET {', '.join(updates)} WHERE id = :job_id"),

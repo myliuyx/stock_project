@@ -155,6 +155,7 @@ class JobService:
             from app.jobs.sync_security_master import main as security_main
             try:
                 security_main()
+                self.update_job_run(task_id, "COMPLETED")
                 self.repo.add_log(task_id, "INFO", "股票主数据同步完成")
             except Exception as e:
                 self.update_job_run(task_id, "FAILED", error_message=str(e))
