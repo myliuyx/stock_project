@@ -138,4 +138,5 @@ def trigger_board_sync_batch(req: BoardSyncBatchRequest, background_tasks: Backg
 
 @router.get("/health", summary="健康检查")
 def health():
-    return {"status": "ok", "app": "etl-engine"}
+    """轻量健康检查（已统一用 success_response 包装）"""
+    return success_response({"status": "ok", "app": "etl-engine"})

@@ -36,16 +36,8 @@ import logging
 import os
 import argparse
 
-# ========== 配置 ==========
-DB_CONFIG = {
-    'host': os.environ.get('DB_HOST', '192.168.3.16'),
-    'port': int(os.environ.get('DB_PORT', '5432')),
-    'database': os.environ.get('DB_NAME', 'stock_cache_system'),
-    'user': os.environ.get('DB_USER', 'postgres'),
-    'password': os.environ.get('DB_PASSWORD', '')
-}
-
-LOG_DIR = os.environ.get("SYNC_LOG_DIR", "/app/logs")
+# ========== 配置（统一从 core.config 导入）==========
+from app.core.config import DB_CONFIG, LOG_DIR
 LOG_FILE = os.path.join(LOG_DIR, f'compute_factor_{now().strftime("%Y%m%d")}.log')
 
 
@@ -327,32 +319,50 @@ def get_all_symbols(conn) -> list:
     return symbols
 
 
-def main():
+def main(start_date: str | None = None, end_date: str | None = None, full: bool = False, date_str: str | None = None) -> int:
+    """
+    技术因子计算入口。
+
+    Args:
+        start_date: 起始日期 YYYY-MM-DD（与 end_date 配对使用）
+        end_date:   结束日期 YYYY-MM-DD
+        full:       全量重算模式
+        date_str:   单日计算模式（等同于 --date）
+
+    Returns:
+        计算的记录数，无交易日时返回 0。
+    """
     logger = setup_logging()
 
-    parser = argparse.ArgumentParser(description='技术因子计算脚本')
-    parser.add_argument('--date', type=str, help='指定单个日期 YYYY-MM-DD')
-    parser.add_argument('--start-date', type=str, help='起始日期 YYYY-MM-DD')
-    parser.add_argument('--end-date', type=str, help='结束日期 YYYY-MM-DD')
-    parser.add_argument('--full', action='store_true', help='全量重算')
-    args, _ = parser.parse_known_args()
+    # CLI 参数优先；若未提供则回退到函数参数
+    if start_date is None and end_date is None and not full and date_str is None:
+        parser = argparse.ArgumentParser(description='技术因子计算脚本')
+        parser.add_argument('--date', type=str, help='指定单个日期 YYYY-MM-DD')
+        parser.add_argument('--start-date', type=str, help='起始日期 YYYY-MM-DD')
+        parser.add_argument('--end-date', type=str, help='结束日期 YYYY-MM-DD')
+        parser.add_argument('--full', action='store_true', help='全量重算')
+        args, _ = parser.parse_known_args()
+
+        if args.full:
+            full = True
+        elif args.date:
+            date_str = args.date
+        elif args.start_date and args.end_date:
+            start_date = args.start_date
+            end_date = args.end_date
 
     # 确定日期范围
-    if args.full:
-        # 全量重算：取最近2年
+    if full:
         end_date = now().strftime('%Y-%m-%d')
         start_date = (now() - timedelta(days=730)).strftime('%Y-%m-%d')
         logger.info(f"全量重算模式: {start_date} ~ {end_date}")
-    elif args.date:
-        start_date = args.date
-        end_date = args.date
-        logger.info(f"单日模式: {start_date}")
-    elif args.start_date and args.end_date:
-        start_date = args.start_date
-        end_date = args.end_date
+    elif date_str:
+        start_date = date_str
+        end_date = date_str
+        logger.info(f"单日模式: {date_str}")
+    elif start_date and end_date:
         logger.info(f"日期范围模式: {start_date} ~ {end_date}")
     else:
-        # 默认计算最近5个交易日
         end_date = now().strftime('%Y-%m-%d')
         start_date = (now() - timedelta(days=10)).strftime('%Y-%m-%d')
         logger.info(f"默认模式 (最近交易日): {start_date} ~ {end_date}")
@@ -407,6 +417,8 @@ def main():
     logger.info(f"处理股票: {total_stocks} 只")
     logger.info(f"写入记录: {total_records} 条")
     logger.info("=" * 60)
+
+    return total_records
 
 
 if __name__ == "__main__":

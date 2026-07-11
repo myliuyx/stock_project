@@ -1,7 +1,6 @@
 from sqlalchemy.orm import Session
 from app.repositories.backfill_repository import BackfillRepository
 import logging
-import os
 
 logger = logging.getLogger("etl_engine.backfill_service")
 
@@ -57,50 +56,28 @@ class BackfillService:
         self.repo.update_status(task_id, "RUNNING", progress=90)
 
     def _sync_financial_backfill(self, task_id: int, symbol: str, start_date: str | None, end_date: str | None):
+        """财务回填：通过函数参数传递年份/季度，不再修改 os.environ（消除竞态）"""
         from app.jobs.etl_financial_indicator import main as financial_main
+
         self.repo.update_status(task_id, "RUNNING", progress=10)
 
-        # 备份并设置环境变量（临时修改全局状态，存在竞态风险，并发部署时需注意）
-        old_start = os.environ.get('SYNC_START_YEAR')
-        old_end = os.environ.get('SYNC_END_YEAR')
-        try:
-            if start_date and len(start_date) >= 4:
-                try:
-                    year = int(start_date[:4])
-                    os.environ['SYNC_START_YEAR'] = str(year)
-                except ValueError:
-                    pass
-            if end_date and len(end_date) >= 4:
-                try:
-                    year = int(end_date[:4])
-                    os.environ['SYNC_END_YEAR'] = str(year)
-                except ValueError:
-                    pass
-            financial_main()
-        finally:
-            # 恢复原值
-            if old_start is not None:
-                os.environ['SYNC_START_YEAR'] = old_start
-            elif 'SYNC_START_YEAR' in os.environ:
-                del os.environ['SYNC_START_YEAR']
-            if old_end is not None:
-                os.environ['SYNC_END_YEAR'] = old_end
-            elif 'SYNC_END_YEAR' in os.environ:
-                del os.environ['SYNC_END_YEAR']
+        # 从日期提取年份 → 区间同步
+        start_year = int(start_date[:4]) if start_date and len(start_date) >= 4 else None
+        end_year = int(end_date[:4]) if end_date and len(end_date) >= 4 else None
 
-        self.repo.update_status(task_id, "RUNNING", progress=90)
+        records_written = financial_main(
+            start_year=start_year,
+            end_year=end_year,
+        ) or 0
+        self.repo.update_status(task_id, "RUNNING", progress=90, rows_written=records_written)
 
     def _sync_factor_backfill(self, task_id: int, symbol: str, start_date: str | None, end_date: str | None):
+        """因子回填：通过函数参数调用 compute_factor，不再伪造 sys.argv"""
         from app.jobs.compute_factor import main as factor_main
+
         self.repo.update_status(task_id, "RUNNING", progress=10)
-        import sys
-        sys.argv = ['compute_factor.py']
-        if start_date:
-            sys.argv.extend(['--start-date', start_date])
-        if end_date:
-            sys.argv.extend(['--end-date', end_date])
-        factor_main()
-        self.repo.update_status(task_id, "RUNNING", progress=90)
+        records_written = factor_main(start_date=start_date, end_date=end_date) or 0
+        self.repo.update_status(task_id, "RUNNING", progress=90, rows_written=records_written)
 
     def _sync_adjust_factor_backfill(self, task_id: int, symbol: str, start_date: str | None, end_date: str | None):
         self.repo.update_status(task_id, "RUNNING", progress=10)

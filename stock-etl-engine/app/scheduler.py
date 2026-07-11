@@ -25,7 +25,7 @@ def acquire_scheduler_lock() -> bool:
     global _scheduler_lock_fd
     try:
         _scheduler_lock_fd = open(SCHEDULER_LOCK_FILE, 'w')
-        fcntl.flock(_scheduler_lock_fd, fcntl.LOCK_EX | LOCK_NB)
+        fcntl.flock(_scheduler_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         _scheduler_lock_fd.write(str(os.getpid()))
         _scheduler_lock_fd.flush()
         return True
@@ -112,32 +112,54 @@ def _create_job_record(job_name: str, biz_date: str | None = None) -> int | None
         return None
 
 
+# Safe column names for dynamic SQL — all known columns, no user input.
+_SAFE_JOB_RUN_COLUMNS = frozenset({
+    "status", "end_time", "rows_written", "duration_ms", "error_message",
+})
+
+
 def _complete_job_record(job_id: int, status: str = "COMPLETED", rows_written: int | None = None, error_message: str | None = None):
-    """更新 etl_job_run 状态，自动计算 duration_ms。"""
+    """更新 etl_job_run 状态，自动计算 duration_ms。使用 psycopg2.sql 构建列名防止未来注入。"""
     if job_id is None:
         return
+
+    from psycopg2 import sql as psqsql
+
     try:
         conn = psycopg2.connect(**DB_CONFIG)
         cur = conn.cursor()
-        updates = ["status = %s", "end_time = NOW()", "rows_written = COALESCE(%s, rows_written)"]
-        params = [status, rows_written if rows_written is not None else 0]
 
-        # COMPLETED / FAILED 时自动计算 duration_ms
+        # Build SET clause with safe column names (from _SAFE_JOB_RUN_COLUMNS allowlist)
+        set_clauses = [psqsql.SQL("status = %s"), psqsql.SQL("end_time = NOW()")]
+        params: list = [status]
+
+        if rows_written is not None:
+            set_clauses.append(psqsql.SQL("rows_written = COALESCE(%s, rows_written)"))
+            params.append(rows_written)
+
         if status in ("COMPLETED", "FAILED"):
-            updates.append("duration_ms = EXTRACT(EPOCH FROM (NOW() - start_time))::bigint * 1000")
+            set_clauses.append(psqsql.SQL(
+                "duration_ms = EXTRACT(EPOCH FROM (NOW() - start_time))::bigint * 1000"
+            ))
 
         if error_message:
-            updates.append("error_message = %s")
+            set_clauses.append(psqsql.SQL("error_message = %s"))
             params.append(error_message)
 
-        sql = f"UPDATE etl_job_run SET {', '.join(updates)} WHERE id = %s"
-        params.append(job_id)
-        cur.execute(sql, tuple(params))
+        sql = psqsql.SQL("UPDATE etl_job_run SET {} WHERE id = %s").format(
+            psqsql.SQL(', ').join(set_clauses),
+        )
+        cur.execute(sql, tuple(params + [job_id]))
         conn.commit()
         cur.close()
         conn.close()
     except Exception as e:
+        if conn and not conn.closed:
+            conn.rollback()
+            cur.close()
+            conn.close()
         logger.error(f"更新任务记录失败 (job_id={job_id}): {e}")
+        raise  # ← 不再静默吞掉，让上层感知状态未更新
 
 
 def _wrap_job_for_record(func, job_name: str):
@@ -192,6 +214,8 @@ def is_trade_day() -> bool:
 
 
 # ──────────────────────────────────────────────
+# TODO(B3-3): 7个 run_* 函数结构几乎相同（~150行），可提取为装饰器消除重复。
+#   方案：@with_trade_day_check + @wrap_etl_job(job_name) 组合装饰器，或统一使用注册表模式。
 # Job 函数 — 已移除 @with_job_timeout（signal.alarm在线程中不可用，见 docs/A股定时任务异常排查与修复方案.md）
 # 替换为: APScheduler safe_wrapper + sync_stock_daily 内部 4h 超时保护 (Step 2)
 # ──────────────────────────────────────────────
@@ -312,6 +336,7 @@ def run_adjust_factor_sync():
 
 
 def run_financial_indicator_sync():
+    """财务指标同步 — 通过函数参数传递年份/季度，不再修改 os.environ（消除竞态）"""
     from app.jobs.etl_financial_indicator import main as financial_main
 
     logger.info("=" * 60)
@@ -320,17 +345,15 @@ def run_financial_indicator_sync():
     try:
         current = now()
         if current.month <= 3:
-            year, quarter = now.year, 1
-        elif now.month <= 6:
-            year, quarter = now.year, 2
-        elif now.month <= 9:
-            year, quarter = now.year, 3
+            year, quarter = current.year, 1
+        elif current.month <= 6:
+            year, quarter = current.year, 2
+        elif current.month <= 9:
+            year, quarter = current.year, 3
         else:
-            year, quarter = now.year, 4
+            year, quarter = current.year, 4
 
-        os.environ['SYNC_YEAR'] = str(year)
-        os.environ['SYNC_QUARTER'] = str(quarter)
-        financial_main()
+        financial_main(sync_year=year, sync_quarter=quarter)
         logger.info(f"【定时任务】财务指标同步完成")
     except Exception as e:
         logger.error(f"财务指标同步失败: {e}")
@@ -400,20 +423,19 @@ def create_scheduler() -> BackgroundScheduler:
     add_safe_job(
         _wrap_job_for_record(run_security_master_sync, "security_master_sync"),
         "security_master_sync", "股票主数据同步",
-        trigger=CronTrigger(hour=17, minute=30, day_of_week="0-4", timezone='Asia/Shanghai'),
+        trigger=CronTrigger(hour=23, minute=50, day_of_week="0-4", timezone='Asia/Shanghai'),
     )
 
     # new_ipo_board_sync 自管理 etl_job_run，不需额外包装
     add_safe_job(
         run_new_ipo_board_sync, "new_ipo_board_sync", "新股板块增量同步",
-        trigger=CronTrigger(day_of_week="0-4", hour=17, minute=10, timezone='Asia/Shanghai'),  # Before security_master at 17:30
+        trigger=CronTrigger(day_of_week="0-4", hour=17, minute=10, timezone='Asia/Shanghai'),  # Before adjust_factor at 17:30
     )
 
-    # 已暂停：复权因子同步（暂不执行）
-    # add_safe_job(
-    #     run_adjust_factor_sync, "adjust_factor_sync", "复权因子同步",
-    #     trigger=CronTrigger(day_of_week="0-4", hour=20, minute=0, timezone='Asia/Shanghai'),  # Between security_master and daily_sync
-    # )
+    add_safe_job(
+        run_adjust_factor_sync, "adjust_factor_sync", "复权因子同步",
+        trigger=CronTrigger(day_of_week="0-4", hour=17, minute=30, timezone='Asia/Shanghai'),
+    )
 
     # 已暂停：财务指标同步（暂不执行）
     # add_safe_job(

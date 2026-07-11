@@ -29,13 +29,9 @@ import os
 import sys
 
 
-DB_CONFIG = {
-    'host': os.environ.get('DB_HOST', '192.168.3.16'),
-    'port': int(os.environ.get('DB_PORT', '5432')),
-    'database': os.environ.get('DB_NAME', 'stock_cache_system'),
-    'user': os.environ.get('DB_USER', 'postgres'),
-    'password': os.environ.get('DB_PASSWORD', '')
-}
+# ========== 配置（统一从 core.config 导入）==========
+from app.core.config import DB_CONFIG
+
 
 def get_db_connection():
     return psycopg2.connect(**DB_CONFIG)
@@ -280,29 +276,54 @@ def get_existing_quarters(conn, symbol):
     cur.close()
     return existing
 
-def main():
+def main(
+    sync_year: int | None = None,
+    sync_quarter: int | None = None,
+    start_year: int | None = None,
+    end_year: int | None = None,
+) -> int:
+    """
+    财务指标 ETL 同步入口。
+
+    Args:
+        sync_year:     指定年份（与 sync_quarter 配对 → 单年单季度）
+        sync_quarter:  指定季度（1-4）
+        start_year:    区间起始年（与 end_year 配对 → 区间多季度）
+        end_year:      区间结束年
+
+    Returns:
+        同步的记录数。
+    """
     sys.stdout.reconfigure(line_buffering=True)
     sys.stderr.reconfigure(line_buffering=True)
 
-    # 支持 SKIP_FIRST 环境变量跳过前N只股票
-    skip_first = int(os.environ.get('SKIP_FIRST', '0'))
+    # CLI fallback：若函数参数未提供，回退到 argparse + os.environ（兼容独立运行）
+    if sync_year is None and sync_quarter is None and start_year is None and end_year is None:
+        import argparse
+        parser = argparse.ArgumentParser(description='财务指标 ETL 同步脚本')
+        parser.add_argument('--year', type=int, help='指定年份 (YYYY)')
+        parser.add_argument('--quarter', type=int, choices=[1,2,3,4], help='指定季度 (1-4)')
+        parser.add_argument('--start-year', type=int, help='区间起始年')
+        parser.add_argument('--end-year', type=int, help='区间结束年')
+        args, _ = parser.parse_known_args()
+
+        if args.year and args.quarter:
+            sync_year = args.year
+            sync_quarter = args.quarter
+        elif args.start_year and args.end_year:
+            start_year = args.start_year
+            end_year = args.end_year
 
     # 参数优先级：
-    # 1. SYNC_YEAR + SYNC_QUARTER → 同步指定年/季度
-    # 2. SYNC_START_YEAR + SYNC_END_YEAR → 同步区间内所有季度
+    # 1. sync_year + sync_quarter → 同步指定年/季度
+    # 2. start_year + end_year → 同步区间内所有季度
     # 3. 都不设置 → 默认同步 2020~2026 全部季度
-    sync_year = os.environ.get('SYNC_YEAR')
-    sync_quarter = os.environ.get('SYNC_QUARTER')
-    sync_start_year = os.environ.get('SYNC_START_YEAR')
-    sync_end_year = os.environ.get('SYNC_END_YEAR')
-
     if sync_year and sync_quarter:
         years = [int(sync_year)]
         quarters = [int(sync_quarter)]
         mode = f'增量同步: {sync_year}年第{sync_quarter}季度'
-    elif sync_start_year and sync_end_year:
-        start_y = int(sync_start_year)
-        end_y = int(sync_end_year)
+    elif start_year and end_year:
+        start_y, end_y = int(start_year), int(end_year)
         years = list(range(start_y, end_y + 1))
         quarters = [1, 2, 3, 4]
         mode = f'区间同步: {start_y}~{end_y}年'
@@ -472,6 +493,8 @@ def main():
     print(f'  错误数: {error_count}条')
     print(f'  平均速度: {total_records/elapsed:.1f}条/秒')
     print('=' * 70)
+
+    return total_records
 
 if __name__ == '__main__':
     main()

@@ -14,6 +14,7 @@ import baostock as bs
 import socket
 import psycopg2
 from psycopg2.extras import execute_values
+from psycopg2 import sql as psqsql
 from datetime import datetime, timedelta
 from app.core.timezone import now
 import time
@@ -24,18 +25,11 @@ import logging
 
 SOCKET_TIMEOUT = 30  # TCP 超时（秒）
 
-# ========== 配置 ==========
-DB_CONFIG = {
-    'host': os.environ.get('DB_HOST', '192.168.3.31'),
-    'port': int(os.environ.get('DB_PORT', '5432')),
-    'database': os.environ.get('DB_NAME', 'stock_cache_system'),
-    'user': os.environ.get('DB_USER', 'postgres'),
-    'password': os.environ.get('DB_PASSWORD', '')
-}
+# ========== 配置（统一从 core.config 导入）==========
+from app.core.config import DB_CONFIG, LOG_DIR
 
 RATE_LIMIT_DELAY = float(os.environ.get('SYNC_RATE_DELAY', '0.2'))  # 每次请求间隔（秒）
 BATCH_SIZE = 500  # 批量写入大小
-LOG_DIR = os.environ.get('SYNC_LOG_DIR', '/app/logs')
 
 
 # ========== 工具函数 ==========
@@ -108,7 +102,7 @@ def clean_industry(raw: str) -> tuple:
 
 
 def query_industry(bs_code: str) -> dict:
-    """顺序查询单只股票的行业信息，带 TCP 超时保护"""
+    """顺序查询单只股票的行业，带 TCP 超时保护"""
     try:
         time.sleep(RATE_LIMIT_DELAY)
 
@@ -135,15 +129,15 @@ def query_industry(bs_code: str) -> dict:
 def get_missing_symbols(conn, limit: int = None) -> list:
     """获取缺少行业信息的在市股票列表"""
     cur = conn.cursor()
-    sql = """
-        SELECT symbol, ticker, exchange
-        FROM dwd_security_master
-        WHERE status = 'LISTED'
-          AND (industry_l1 IS NULL OR industry_l2 IS NULL)
-    """
+    base_sql = psqsql.SQL(
+        "SELECT symbol, ticker, exchange FROM dwd_security_master "
+        "WHERE status = 'LISTED' AND (industry_l1 IS NULL OR industry_l2 IS NULL)"
+    )
     if limit:
-        sql += f" LIMIT {limit}"
-    cur.execute(sql)
+        query = base_sql + psqsql.SQL(" LIMIT {}")
+        cur.execute(query.format(psqsql.Literal(int(limit))))
+    else:
+        cur.execute(base_sql)
     rows = cur.fetchall()
     cur.close()
     return [{'symbol': r[0], 'ticker': r[1], 'exchange': r[2]} for r in rows]
@@ -202,6 +196,7 @@ def main():
 
     logger = setup_logging()
     start_time = now()
+    written = 0  # total records written to DB (for return value)
 
     logger.info("=" * 70)
     logger.info("  股票主数据同步")
@@ -245,17 +240,18 @@ def main():
 
         logger.info(f"  获取股票总数: {len(stocks)} (在市 {(sum(1 for s in stocks if s['status']=='LISTED'))} 只)")
 
-        # ========== Step 2: 找出缺行业信息的股票，并发查询行业 ==========
+        # ========== Step 2: 找出缺行业信息的股票，查询行业分类 ==========
         missing = get_missing_symbols(conn)
         logger.info(f"\n[Step 2] 缺行业信息股票: {len(missing)} 只")
 
         industry_results = {}
+        error_count = 0
+
         if missing:
             symbols = [s['symbol'] for s in missing]
             bs_codes = [to_baostock_code(s['symbol']) for s in missing]
 
             logger.info(f"  顺序查询 {len(missing)} 只股票的行业中...")
-            error_count = 0
 
             for i, (bs_code, symbol) in enumerate(zip(bs_codes, symbols)):
                 result = query_industry(bs_code)
@@ -271,14 +267,36 @@ def main():
 
         # ========== Step 3: 合并行业信息到股票数据 ==========
         logger.info("\n[Step 3] 合并行业信息...")
+
+        # 从数据库读取当前已有的行业分类（避免把上次成功写入的数据覆盖为 NULL）
+        existing_industry = {}
+        cur3 = conn.cursor()
+        cur3.execute(
+            "SELECT symbol, industry_l1, industry_l2 FROM dwd_security_master WHERE status = 'LISTED'"
+        )
+        for row in cur3.fetchall():
+            existing_industry[row[0]] = {'industry_l1': row[1], 'industry_l2': row[2]}
+        cur3.close()
+
+        updated_count = 0
+        preserved_count = 0
         for s in stocks:
             if s['symbol'] in industry_results:
                 ind = industry_results[s['symbol']]
                 s['industry_l1'] = ind.get('industry_l1')
                 s['industry_l2'] = ind.get('industry_l2')
+                updated_count += 1
+            elif s['symbol'] in existing_industry:
+                # 本次没查到行业，但上次已有 → 保留旧数据
+                s['industry_l1'] = existing_industry[s['symbol']]['industry_l1']
+                s['industry_l2'] = existing_industry[s['symbol']]['industry_l2']
+                preserved_count += 1
             else:
+                # 两次都没查到 → 设置为 NULL（不会覆盖上次已有的）
                 s['industry_l1'] = None
                 s['industry_l2'] = None
+
+        logger.info(f"  行业更新: {updated_count}只, 保留旧数据: {preserved_count}只")
 
         # ========== Step 4: Upsert 到数据库 ==========
         logger.info("\n[Step 4] 执行 Upsert...")
@@ -314,11 +332,13 @@ def main():
         logger.info(f"  有行业信息: {has_industry}")
         logger.info(f"  总耗时: {elapsed:.1f}秒 ({elapsed/60:.1f}分钟)")
         logger.info("=" * 70)
+        return written
 
     except Exception as e:
         logger.error(f"同步失败: {e}")
         import traceback
         logger.error(traceback.format_exc())
+        return 0
     finally:
         bs.logout()
 

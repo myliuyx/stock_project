@@ -43,16 +43,8 @@ import logging
 import os
 import argparse
 
-# ========== 配置 ==========
-DB_CONFIG = {
-    'host': os.environ.get('DB_HOST', '192.168.3.16'),
-    'port': int(os.environ.get('DB_PORT', '5432')),
-    'database': os.environ.get('DB_NAME', 'stock_cache_system'),
-    'user': os.environ.get('DB_USER', 'postgres'),
-    'password': os.environ.get('DB_PASSWORD', '')
-}
-
-LOG_DIR = os.environ.get("SYNC_LOG_DIR", "/app/logs")
+# ========== 配置（统一从 core.config 导入）==========
+from app.core.config import DB_CONFIG, LOG_DIR
 LOG_FILE = os.path.join(LOG_DIR, f'build_selection_mart_{now().strftime("%Y%m%d")}.log')
 
 # ========== 评分常量 ==========

@@ -34,14 +34,15 @@ import threading
 import concurrent.futures
 from typing import List, Dict, Optional, Tuple
 
-# ========== 配置 ==========
-DB_CONFIG = {
-    'host': os.environ.get('DB_HOST', '192.168.3.16'),
-    'port': int(os.environ.get('DB_PORT', '5432')),
-    'database': os.environ.get('DB_NAME', 'stock_cache_system'),
-    'user': os.environ.get('DB_USER', 'postgres'),
-    'password': os.environ.get('DB_PASSWORD', '') or input("DB_PASSWORD not set. Enter password: ")
-}
+# ========== 配置（统一从 core.config 导入）==========
+from app.core.config import DB_CONFIG, LOG_DIR
+
+# ── Step2/Step3: 定时任务超时保护 + 进度告警配置 ──
+MAX_SYNC_HOURS = 4          # 最大执行时间（小时），超过则主动退出并保存 checkpoint
+PROGRESS_CHECK_INTERVAL = 500  # 每处理 N 只股票记录一次进度报告
+
+BAOSTOCK_QUERY_TIMEOUT = 30  # 每个 Baostock API 调用的超时时间（秒）
+
 
 SYNC_CONFIG = {
     'job_name': 'daily_kline_sync',
@@ -73,7 +74,6 @@ def run_with_timeout(func, timeout, *args, **kwargs):
 
 
 # ========== 日期范围（默认从命令行参数覆盖）==========
-LOG_DIR = os.environ.get("SYNC_LOG_DIR", "/app/logs")
 
 # ========== 日志 ==========
 def setup_logging():

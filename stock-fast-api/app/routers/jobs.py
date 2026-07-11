@@ -203,10 +203,12 @@ def trigger_adjust_factor_sync(
     logger.info(f"【手动触发】复权因子同步 {start_year}-{end_year}")
 
     service = JobService(db)
-    job_id = service.init_job_run(f"adjust_factor_sync_{start_year}_{end_year}", str(end_year))
+    # biz_date 必须为 YYYY-MM-DD 格式，使用今天作为业务日期
+    today_str = dt_now().strftime("%Y-%m-%d")
+    job_id = service.init_job_run(f"adjust_factor_sync_{start_year}_{end_year}", today_str)
 
-    result = service.trigger_etl(job_id, f"adjust_factor_sync", str(end_year), False,
-                                 params={"SYNC_START_YEAR": str(start_year), "SYNC_END_YEAR": str(end_year)})
+    # 传入完整 job_name（含年份），ETL engine 的 _dispatch_adjust_factor 会从中解析 start/end year
+    result = service.trigger_etl(job_id, f"adjust_factor_sync_{start_year}_{end_year}", today_str, False)
     if result["code"] != 0:
         return error_response(code=5021, message=result["message"])
     return success_response({

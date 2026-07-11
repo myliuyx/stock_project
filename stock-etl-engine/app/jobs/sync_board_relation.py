@@ -28,14 +28,8 @@ import argparse
 import signal
 
 
-# ========== 配置 ==========
-DB_CONFIG = {
-    'host': os.environ.get('DB_HOST', '192.168.3.16'),
-    'port': int(os.environ.get('DB_PORT', '5432')),
-    'database': os.environ.get('DB_NAME', 'stock_cache_system'),
-    'user': os.environ.get('DB_USER', 'postgres'),
-    'password': os.environ.get('DB_PASSWORD', ''),
-}
+# ========== 配置（统一从 core.config 导入）==========
+from app.core.config import DB_CONFIG
 
 RATE_LIMIT_DELAY = float(os.environ.get('SYNC_RATE_DELAY', '0.02'))
 BATCH_SIZE = 200

@@ -2,7 +2,8 @@ from datetime import timedelta
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from app.core.config import ETL_API_PORT, ETL_VERSION
+from app.core.config import ETL_API_PORT, ETL_VERSION, validate_config
+from app.core.response import success_response
 from app.core.logger import logger
 
 app = FastAPI(
@@ -38,6 +39,10 @@ scheduler = None
 @app.on_event("startup")
 async def startup_event():
     global scheduler
+
+    # Fail fast on missing DB credentials instead of cryptic connection errors later
+    validate_config()
+
     from app.scheduler import create_scheduler, acquire_scheduler_lock
 
     if acquire_scheduler_lock():
@@ -80,29 +85,29 @@ def health_check():
                 "next_run_at": next_run_str,
                 "trigger": str(job.trigger),
             }
-        return {
+        return success_response({
             "status": "ok",
             "app": "A股ETL引擎",
             "version": ETL_VERSION,
             "scheduler_running": True,
             "jobs": jobs_status,
-        }
+        })
     elif scheduler:
-        return {
+        return success_response({
             "status": "degraded",
             "app": "A股ETL引擎",
             "version": ETL_VERSION,
             "scheduler_running": False,
             "error": "Scheduler is not running",
-        }
+        })
     else:
-        return {
+        return success_response({
             "status": "unhealthy",
             "app": "A股ETL引擎",
             "version": ETL_VERSION,
             "scheduler_running": False,
             "error": "Scheduler was not initialized (lock held by another process?)",
-        }
+        })
 
 
 if __name__ == "__main__":

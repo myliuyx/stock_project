@@ -1,8 +1,21 @@
+import time
+
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
+from app.core.logger import logger
+
+
+# Whitelist of safe column names for etl_job_run — prevents accidental injection from dynamic construction.
+_JOB_RUN_SAFE_COLUMNS = frozenset({
+    "status", "end_time", "rows_raw", "rows_written", "error_message", "duration_ms",
+})
+
 
 class JobRepository:
+    DB_RETRY_COUNT = 3
+    DB_RETRY_DELAY = 1.0
+
     def __init__(self, db: Session):
         self.db = db
 
@@ -151,15 +164,25 @@ class JobRepository:
         }
 
     def add_log(self, job_id: int, level: str, message: str):
-        """写入任务日志"""
-        self.db.execute(
-            text("""
-                INSERT INTO etl_job_run_log (job_id, level, message, created_at)
-                VALUES (:job_id, :level, :message, NOW())
-            """),
-            {"job_id": job_id, "level": level, "message": message},
-        )
-        self.db.commit()
+        """写入任务日志，含数据库连接失败自动重试"""
+        for attempt in range(1, self.DB_RETRY_COUNT + 1):
+            try:
+                self.db.execute(
+                    text("""
+                        INSERT INTO etl_job_run_log (job_id, level, message, created_at)
+                        VALUES (:job_id, :level, :message, NOW())
+                    """),
+                    {"job_id": job_id, "level": level, "message": message},
+                )
+                self.db.commit()
+                return
+            except Exception as e:
+                self.db.rollback()   # reset session so the next retry starts from a clean state
+                if attempt == self.DB_RETRY_COUNT:
+                    logger.error(f"[DB重试] add_log(id={job_id}) 失败 "
+                                 f"尝试 {attempt}/{self.DB_RETRY_COUNT}: {e}")
+                    raise
+                time.sleep(self.DB_RETRY_DELAY)
 
     def run_job(self, job_name: str, biz_date: str | None, force: bool) -> dict:
         """
@@ -175,14 +198,22 @@ class JobRepository:
 
     def init_job_run(self, job_name: str, biz_date: str | None = None) -> int:
         """创建 ETL 任务记录，返回 job_id"""
-        result = self.db.execute(
-            text("""
+        if biz_date is not None:
+            sql_text = text("""
                 INSERT INTO etl_job_run (job_name, biz_date, status, start_time, created_at)
                 VALUES (:job_name, :biz_date, 'RUNNING', NOW(), NOW())
                 RETURNING id
-            """),
-            {"job_name": job_name, "biz_date": biz_date}
-        )
+            """)
+            params = {"job_name": job_name, "biz_date": biz_date}
+        else:
+            sql_text = text("""
+                INSERT INTO etl_job_run (job_name, status, start_time, created_at)
+                VALUES (:job_name, 'RUNNING', NOW(), NOW())
+                RETURNING id
+            """)
+            params = {"job_name": job_name}
+
+        result = self.db.execute(sql_text, params)
         self.db.commit()
         return result.fetchone()[0]
 
@@ -194,7 +225,7 @@ class JobRepository:
         rows_written: int | None = None,
         error_message: str | None = None,
     ):
-        """更新 ETL 任务状态"""
+        """更新 ETL 任务状态，含数据库连接失败自动重试"""
         updates = ["status = :status", "end_time = NOW()"]
         params = {"job_id": job_id, "status": status}
 
@@ -214,11 +245,22 @@ class JobRepository:
                 "duration_ms = EXTRACT(EPOCH FROM (NOW() - start_time))::bigint * 1000"
             )
 
-        self.db.execute(
-            text(f"UPDATE etl_job_run SET {', '.join(updates)} WHERE id = :job_id"),
-            params
-        )
-        self.db.commit()
+        sql = f"UPDATE etl_job_run SET {', '.join(updates)} WHERE id = :job_id"
+
+        for attempt in range(1, self.DB_RETRY_COUNT + 1):
+            try:
+                self.db.execute(text(sql), params)
+                self.db.commit()
+                return
+            except Exception as e:
+                self.db.rollback()   # reset session so the next retry starts from a clean state
+                if attempt == self.DB_RETRY_COUNT:
+                    logger.error(f"[DB重试] update_job_run(id={job_id}, status={status}) 失败 "
+                                 f"尝试 {attempt}/{self.DB_RETRY_COUNT}: {e}")
+                    raise
+                logger.warning(f"[DB重试] update_job_run(id={job_id}, status={status}) 第 "
+                               f"{attempt} 次失败，{self.DB_RETRY_DELAY}s 后重试: {e}")
+                time.sleep(self.DB_RETRY_DELAY)
 
     def cancel_job(self, job_id: int) -> bool:
         self.update_job_run(job_id, "CANCELLED")
