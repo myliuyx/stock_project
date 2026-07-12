@@ -85,6 +85,8 @@ def cleanup_old_logs():
 
 def _create_job_record(job_name: str, biz_date: str | None = None) -> int | None:
     """在 etl_job_run 表插入一条 RUNNING 记录，返回 job_id；失败则返回 None。"""
+    conn = None
+    cur = None
     try:
         conn = psycopg2.connect(**DB_CONFIG)
         cur = conn.cursor()
@@ -97,19 +99,28 @@ def _create_job_record(job_name: str, biz_date: str | None = None) -> int | None
         """, (job_name, biz_date, current_time, current_time))
         job_id = cur.fetchone()[0]
         conn.commit()
-        cur.close()
-        conn.close()
         return job_id
     except Exception as e:
         logger.error(f"创建任务记录失败 ({job_name}): {e}")
         import traceback
         logger.error(traceback.format_exc())
-        try:
-            if 'conn' in locals():
-                conn.close()
-        except Exception:
-            pass
+        if conn is not None and not conn.closed:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         return None
+    finally:
+        if cur is not None:
+            try:
+                cur.close()
+            except Exception:
+                pass
+        if conn is not None and not conn.closed:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # Safe column names for dynamic SQL — all known columns, no user input.
@@ -125,6 +136,8 @@ def _complete_job_record(job_id: int, status: str = "COMPLETED", rows_written: i
 
     from psycopg2 import sql as psqsql
 
+    conn = None
+    cur = None
     try:
         conn = psycopg2.connect(**DB_CONFIG)
         cur = conn.cursor()
@@ -151,15 +164,22 @@ def _complete_job_record(job_id: int, status: str = "COMPLETED", rows_written: i
         )
         cur.execute(sql, tuple(params + [job_id]))
         conn.commit()
-        cur.close()
-        conn.close()
     except Exception as e:
-        if conn and not conn.closed:
+        if conn is not None and not conn.closed:
             conn.rollback()
-            cur.close()
-            conn.close()
         logger.error(f"更新任务记录失败 (job_id={job_id}): {e}")
         raise  # ← 不再静默吞掉，让上层感知状态未更新
+    finally:
+        if cur is not None:
+            try:
+                cur.close()
+            except Exception:
+                pass
+        if conn is not None and not conn.closed:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def _wrap_job_for_record(func, job_name: str):
@@ -359,6 +379,7 @@ def run_financial_indicator_sync():
         logger.error(f"财务指标同步失败: {e}")
         import traceback
         logger.error(traceback.format_exc())
+        raise  # ← re-raise，让 _wrap_job_for_record 标记 FAILED
 
 
 def _scheduler_event_listener(event):
@@ -437,11 +458,12 @@ def create_scheduler() -> BackgroundScheduler:
         trigger=CronTrigger(day_of_week="0-4", hour=17, minute=30, timezone='Asia/Shanghai'),
     )
 
-    # 已暂停：财务指标同步（暂不执行）
-    # add_safe_job(
-    #     run_financial_indicator_sync, "financial_indicator_sync", "财务指标同步",
-    #     trigger=CronTrigger(hour=21, minute=30, day_of_week="0-4", timezone='Asia/Shanghai'),  # Before factor_compute at 22:30
-    # )
+    # run_financial_indicator_sync 不自管理 etl_job_run，需包装记录创建
+    add_safe_job(
+        _wrap_job_for_record(run_financial_indicator_sync, "financial_indicator_sync"),
+        "financial_indicator_sync", "财务指标同步",
+        trigger=CronTrigger(hour=21, minute=30, day_of_week="0-4", timezone='Asia/Shanghai'),  # Before factor_compute at 22:30
+    )
 
     # run_daily_sync (sync_stock_daily) 自管理 etl_job_run，不需额外包装
     add_safe_job(

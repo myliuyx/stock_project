@@ -27,10 +27,46 @@ from app.core.timezone import now
 import time
 import os
 import sys
+import logging
+import concurrent.futures
 
+
+logger = logging.getLogger(__name__)
 
 # ========== 配置（统一从 core.config 导入）==========
 from app.core.config import DB_CONFIG
+
+# ── Baostock API 超时保护 ──
+BAOSTOCK_QUERY_TIMEOUT = 30  # 每个 Baostock API 调用的超时时间（秒）
+
+# 模块级单例 Executor：避免每次调用创建/销毁线程池（全量同步 ~5000 只 × 5 张表 ≈ 25000 次）
+_baostock_executor: concurrent.futures.ThreadPoolExecutor | None = None
+
+
+def _get_baostock_executor() -> concurrent.futures.ThreadPoolExecutor:
+    """懒初始化模块级单例 Executor（max_workers=1，调用串行化）。"""
+    global _baostock_executor
+    if _baostock_executor is None or _baostock_executor._shutdown:
+        _baostock_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    return _baostock_executor
+
+
+def _run_with_timeout(func, timeout, *args, **kwargs):
+    """在线程中执行函数，超时则抛出 TimeoutError"""
+    executor = _get_baostock_executor()
+    future = executor.submit(func, *args, **kwargs)
+    try:
+        return future.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        raise TimeoutError(f"Baostock API 调用超时（{timeout}s）: {func.__name__}{args}")
+
+
+def _shutdown_baostock_executor() -> None:
+    """安全关闭 Executor，供 main() finally 块调用。"""
+    global _baostock_executor
+    if _baostock_executor is not None and not _baostock_executor._shutdown:
+        _baostock_executor.shutdown(wait=False)
+        _baostock_executor = None
 
 
 def get_db_connection():
@@ -64,7 +100,12 @@ def get_report_type(stat_date_str):
 
     我们需要正确区分 Q2 和 H1：Q2 单独表示二季度数据（4-6月），H1 是半年度累计
     """
-    month = int(stat_date_str[5:7])
+    try:
+        if len(stat_date_str) < 7:
+            return None
+        month = int(stat_date_str[5:7])
+    except (ValueError, IndexError):
+        return None
     if month == 3:
         return 'Q1'
     elif month == 6:
@@ -77,12 +118,13 @@ def get_report_type(stat_date_str):
 
 def to_percent(val, max_val=None):
     """将小数转为百分数，如 0.15 -> 15.0
-    如果值超过 max_val，返回 None（视为异常值）
+    如果值超过 max_val，返回 None（视为异常值）并记录警告日志。
     """
     if val is None:
         return None
     result = round(val * 100, 4)
     if max_val is not None and abs(result) > max_val:
+        logger.warning("财务指标百分比超出阈值 (%.4f%% > %.0f%%)，置为空: value=%s", result, max_val, val)
         return None
     return result
 
@@ -92,58 +134,98 @@ def parse_float(val):
         return None
     try:
         return float(val)
-    except:
+    except (ValueError, TypeError):
         return None
 
-def fetch_profit_data(code, year, quarter):
-    """获取利润表数据"""
+def _fetch_profit_data(code, year, quarter):
+    """获取利润表数据（内部无超时版本）"""
     rs = bs.query_profit_data(code=code, year=year, quarter=quarter)
-    data_list = []
     if rs.error_code != '0':
         return [], []
+    data_list = []
+    while rs.next():
+        data_list.append(rs.get_row_data())
+    return data_list, rs.fields
+
+def fetch_profit_data(code, year, quarter):
+    """获取利润表数据（带超时保护）"""
+    try:
+        return _run_with_timeout(_fetch_profit_data, BAOSTOCK_QUERY_TIMEOUT, code, year, quarter)
+    except TimeoutError as e:
+        logger.warning("利润表查询超时: %s %d Q%d", code, year, quarter)
+        return [], []
+
+def _fetch_balance_data(code, year, quarter):
+    """获取资产负债表数据（内部无超时版本）"""
+    rs = bs.query_balance_data(code=code, year=year, quarter=quarter)
+    if rs.error_code != '0':
+        return [], []
+    data_list = []
     while rs.next():
         data_list.append(rs.get_row_data())
     return data_list, rs.fields
 
 def fetch_balance_data(code, year, quarter):
-    """获取资产负债表数据"""
-    rs = bs.query_balance_data(code=code, year=year, quarter=quarter)
-    data_list = []
+    """获取资产负债表数据（带超时保护）"""
+    try:
+        return _run_with_timeout(_fetch_balance_data, BAOSTOCK_QUERY_TIMEOUT, code, year, quarter)
+    except TimeoutError as e:
+        logger.warning("资产负债表查询超时: %s %d Q%d", code, year, quarter)
+        return [], []
+
+def _fetch_growth_data(code, year, quarter):
+    """获取成长能力数据（内部无超时版本）"""
+    rs = bs.query_growth_data(code=code, year=year, quarter=quarter)
     if rs.error_code != '0':
         return [], []
+    data_list = []
     while rs.next():
         data_list.append(rs.get_row_data())
     return data_list, rs.fields
 
 def fetch_growth_data(code, year, quarter):
-    """获取成长能力数据"""
-    rs = bs.query_growth_data(code=code, year=year, quarter=quarter)
-    data_list = []
+    """获取成长能力数据（带超时保护）"""
+    try:
+        return _run_with_timeout(_fetch_growth_data, BAOSTOCK_QUERY_TIMEOUT, code, year, quarter)
+    except TimeoutError as e:
+        logger.warning("成长能力查询超时: %s %d Q%d", code, year, quarter)
+        return [], []
+
+def _fetch_dupont_data(code, year, quarter):
+    """获取杜邦分析数据（内部无超时版本）"""
+    rs = bs.query_dupont_data(code=code, year=year, quarter=quarter)
     if rs.error_code != '0':
         return [], []
+    data_list = []
     while rs.next():
         data_list.append(rs.get_row_data())
     return data_list, rs.fields
 
 def fetch_dupont_data(code, year, quarter):
-    """获取杜邦分析数据"""
-    rs = bs.query_dupont_data(code=code, year=year, quarter=quarter)
-    data_list = []
+    """获取杜邦分析数据（带超时保护）"""
+    try:
+        return _run_with_timeout(_fetch_dupont_data, BAOSTOCK_QUERY_TIMEOUT, code, year, quarter)
+    except TimeoutError as e:
+        logger.warning("杜邦分析查询超时: %s %d Q%d", code, year, quarter)
+        return [], []
+
+def _fetch_cash_flow_data(code, year, quarter):
+    """获取现金流数据（内部无超时版本）"""
+    rs = bs.query_cash_flow_data(code=code, year=year, quarter=quarter)
     if rs.error_code != '0':
         return [], []
+    data_list = []
     while rs.next():
         data_list.append(rs.get_row_data())
     return data_list, rs.fields
 
 def fetch_cash_flow_data(code, year, quarter):
-    """获取现金流数据"""
-    rs = bs.query_cash_flow_data(code=code, year=year, quarter=quarter)
-    data_list = []
-    if rs.error_code != '0':
+    """获取现金流数据（带超时保护）"""
+    try:
+        return _run_with_timeout(_fetch_cash_flow_data, BAOSTOCK_QUERY_TIMEOUT, code, year, quarter)
+    except TimeoutError as e:
+        logger.warning("现金流查询超时: %s %d Q%d", code, year, quarter)
         return [], []
-    while rs.next():
-        data_list.append(rs.get_row_data())
-    return data_list, rs.fields
 
 def fetch_all_financial_data(code, year, quarter):
     """获取某股票某季度所有财务数据并合并"""
@@ -263,19 +345,6 @@ def symbol_to_baostock_code(symbol):
         return f'bj.{ticker}'
     return None
 
-def get_existing_quarters(conn, symbol):
-    """获取某股票已存在的季度列表"""
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT report_period, report_type FROM dwd_stock_financial_indicator WHERE symbol = %s",
-        (symbol,)
-    )
-    existing = set()
-    for row in cur.fetchall():
-        existing.add((row[0], row[1]))
-    cur.close()
-    return existing
-
 def main(
     sync_year: int | None = None,
     sync_quarter: int | None = None,
@@ -344,145 +413,186 @@ def main(
     symbols = get_all_symbols(conn)
     total_stocks = len(symbols)
 
+    # ── 批量加载已存在季度（一次性查询替代 N+1）──
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT symbol, report_period::text, report_type FROM dwd_stock_financial_indicator WHERE symbol = ANY(%s)",
+        (symbols,),
+    )
+    existing_lookup: dict[str, set[tuple]] = {}
+    for sym, rp, rt in cur.fetchall():
+        existing_lookup.setdefault(sym, set()).add((rp, rt))
+    cur.close()
+
     print(f'\n[配置]')
     print(f'  股票数量: {total_stocks}')
     print(f'  同步年份: {years}')
     print(f'  同步季度: {quarters}')
-    print(f'  优化: 跳过已存在的季度数据')
-    if skip_first > 0:
-        print(f'  跳过前: {skip_first} 只股票')
+    print(f'  优化: 跳过已存在的季度数据（批量加载）')
 
     total_records = 0
     error_count = 0
     skip_count = 0
     start_time = now()
 
-    print(f'\n[开始同步]', flush=True)
-    print('-' * 70, flush=True)
+    # ── UPSERT SQL（参数化，供 executemany 使用）──
+    upsert_sql = """
+    INSERT INTO dwd_stock_financial_indicator
+    (symbol, report_period, report_type, announce_date, eps, bps, roe, roa,
+     gross_margin, net_margin, debt_to_asset, current_ratio, quick_ratio,
+     total_share, liqa_share, revenue, net_profit, revenue_yoy, net_profit_yoy,
+     ocf, ocf_to_revenue, source, updated_at)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+    ON CONFLICT (symbol, report_period, report_type)
+    DO UPDATE SET
+        announce_date = EXCLUDED.announce_date,
+        eps = EXCLUDED.eps,
+        bps = EXCLUDED.bps,
+        roe = EXCLUDED.roe,
+        roa = EXCLUDED.roa,
+        gross_margin = EXCLUDED.gross_margin,
+        net_margin = EXCLUDED.net_margin,
+        debt_to_asset = EXCLUDED.debt_to_asset,
+        current_ratio = EXCLUDED.current_ratio,
+        quick_ratio = EXCLUDED.quick_ratio,
+        total_share = EXCLUDED.total_share,
+        liqa_share = EXCLUDED.liqa_share,
+        revenue = EXCLUDED.revenue,
+        net_profit = EXCLUDED.net_profit,
+        revenue_yoy = EXCLUDED.revenue_yoy,
+        net_profit_yoy = EXCLUDED.net_profit_yoy,
+        ocf = EXCLUDED.ocf,
+        ocf_to_revenue = EXCLUDED.ocf_to_revenue,
+        source = EXCLUDED.source,
+        updated_at = NOW()
+    """
 
-    for idx, symbol in enumerate(symbols):
-        # 跳过前N只股票
-        if idx < skip_first:
-            continue
+    BATCH_SIZE = 100  # 每批提交行数，与 sync_stock_daily.py 保持一致
 
-        bs_code = symbol_to_baostock_code(symbol)
-        if not bs_code:
-            continue
+    def _flush_batch(batch: list) -> int:
+        """批量执行 UPSERT 并 commit。"""
+        if not batch:
+            return 0
+        cur = conn.cursor()
+        try:
+            execute_values(cur, upsert_sql, batch, template=None, page_size=BATCH_SIZE)
+            conn.commit()
+            return len(batch)
+        except Exception as e:
+            conn.rollback()
+            logger.error("批量 UPSERT 失败 (%d 条): %s", len(batch), e)
+            raise
+        finally:
+            cur.close()
 
-        stock_records = 0
-        stock_skip = 0
+    try:
+        print(f'\n[开始同步]', flush=True)
+        print('-' * 70, flush=True)
 
-        # 获取已存在的季度，减少重复查询
-        existing_quarters = get_existing_quarters(conn, symbol)
+        batch_buffer: list[tuple] = []
+        stock_records_count = 0  # per-stock counter reset not needed (tracked via stock_skip below)
 
-        for year in years:
-            for quarter in quarters:
-                # 映射 quarter 到 report_type
-                report_type = {1: 'Q1', 2: 'H1', 3: 'Q3', 4: 'annual'}[quarter]
+        for idx, symbol in enumerate(symbols):
+            bs_code = symbol_to_baostock_code(symbol)
+            if not bs_code:
+                continue
 
-# 计算 report_period（用于判断是否已存在）
-                month_day_map = {1: (3, 31), 2: (6, 30), 3: (9, 30), 4: (12, 31)}
-                m, d = month_day_map[quarter]
-                report_period = date(year, m, d)
+            stock_skip = 0
+            existing_quarters = existing_lookup.get(symbol, set())
 
-                # 跳过已存在的季度
-                if (report_period, report_type) in existing_quarters:
-                    skip_count += 1
-                    stock_skip += 1
-                    continue
+            for year in years:
+                for quarter in quarters:
+                    # 映射 quarter 到 report_type
+                    report_type = {1: 'Q1', 2: 'H1', 3: 'Q3', 4: 'annual'}[quarter]
 
-                try:
-                    data = fetch_all_financial_data(bs_code, year, quarter)
-                    if data['statDate'] is None or data['report_period'] is None:
+                    # 计算 report_period（用于判断是否已存在）
+                    month_day_map = {1: (3, 31), 2: (6, 30), 3: (9, 30), 4: (12, 31)}
+                    m, d = month_day_map[quarter]
+                    report_period_str = f"{year}-{m:02d}-{d:02d}"
+
+                    # 跳过已存在的季度（existing_quarters 存的是字符串 key）
+                    if (report_period_str, report_type) in existing_quarters:
+                        skip_count += 1
+                        stock_skip += 1
                         continue
 
-                    # 计算 bps: equity / total_share
-                    # 由于 Baostock 未提供 equity 字段，通过 ROE 公式估算: equity ≈ net_profit / roe
-                    # 注：此方法依赖 net_profit 和 roe 数据的一致性，可能存在微小误差
-                    if data['bps'] is None:
-                        np = data['net_profit']
-                        r = data['roe']
-                        ts = data['total_share']
-                        if np is not None and r is not None and r != 0 and ts is not None and ts != 0:
-                            equity = np / (r / 100)  # roe 是百分数，转为小数
-                            data['bps'] = round(equity / ts, 4)
+                    try:
+                        data = fetch_all_financial_data(bs_code, year, quarter)
+                        if data['statDate'] is None or data['report_period'] is None:
+                            continue
 
-                    cur = conn.cursor()
-                    upsert_sql = """
-                    INSERT INTO dwd_stock_financial_indicator
-                    (symbol, report_period, report_type, announce_date, eps, bps, roe, roa,
-                     gross_margin, net_margin, debt_to_asset, current_ratio, quick_ratio,
-                     total_share, liqa_share, revenue, net_profit, revenue_yoy, net_profit_yoy,
-                     ocf, ocf_to_revenue, source, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                    ON CONFLICT (symbol, report_period, report_type)
-                    DO UPDATE SET
-                        announce_date = EXCLUDED.announce_date,
-                        eps = EXCLUDED.eps,
-                        bps = EXCLUDED.bps,
-                        roe = EXCLUDED.roe,
-                        roa = EXCLUDED.roa,
-                        gross_margin = EXCLUDED.gross_margin,
-                        net_margin = EXCLUDED.net_margin,
-                        debt_to_asset = EXCLUDED.debt_to_asset,
-                        current_ratio = EXCLUDED.current_ratio,
-                        quick_ratio = EXCLUDED.quick_ratio,
-                        total_share = EXCLUDED.total_share,
-                        liqa_share = EXCLUDED.liqa_share,
-                        revenue = EXCLUDED.revenue,
-                        net_profit = EXCLUDED.net_profit,
-                        revenue_yoy = EXCLUDED.revenue_yoy,
-                        net_profit_yoy = EXCLUDED.net_profit_yoy,
-                        ocf = EXCLUDED.ocf,
-                        ocf_to_revenue = EXCLUDED.ocf_to_revenue,
-                        source = EXCLUDED.source,
-                        updated_at = NOW()
-                    """
+                        # 计算 bps: equity / total_share
+                        # 由于 Baostock 未提供 equity 字段，通过 ROE 公式估算: equity ≈ net_profit / roe
+                        # 注：此方法依赖 net_profit 和 roe 数据的一致性，可能存在微小误差
+                        if data['bps'] is None:
+                            np_ = data['net_profit']
+                            r = data['roe']
+                            ts = data['total_share']
+                            if np_ is not None and r is not None and r != 0 and ts is not None and ts != 0:
+                                equity = np_ / (r / 100)  # roe 是百分数，转为小数
+                                data['bps'] = round(equity / ts, 4)
 
-                    cur.execute(upsert_sql, (
-                        symbol,
-                        data['report_period'],
-                        data['report_type'],
-                        data['announce_date'],
-                        data['eps'],
-                        data['bps'],
-                        data['roe'],
-                        data['roa'],
-                        data['gross_margin'],
-                        data['net_margin'],
-                        data['debt_to_asset'],
-                        data['current_ratio'],
-                        data['quick_ratio'],
-                        data['total_share'],
-                        data['liqa_share'],
-                        data['revenue'],
-                        data['net_profit'],
-                        data['revenue_yoy'],
-                        data['net_profit_yoy'],
-                        data['ocf'],
-                        data['ocf_to_revenue'],
-                        data['source']
-                    ))
-                    conn.commit()
-                    cur.close()
-                    total_records += 1
-                    stock_records += 1
+                        batch_buffer.append((
+                            symbol,
+                            data['report_period'],
+                            data['report_type'],
+                            data['announce_date'],
+                            data['eps'],
+                            data['bps'],
+                            data['roe'],
+                            data['roa'],
+                            data['gross_margin'],
+                            data['net_margin'],
+                            data['debt_to_asset'],
+                            data['current_ratio'],
+                            data['quick_ratio'],
+                            data['total_share'],
+                            data['liqa_share'],
+                            data['revenue'],
+                            data['net_profit'],
+                            data['revenue_yoy'],
+                            data['net_profit_yoy'],
+                            data['ocf'],
+                            data['ocf_to_revenue'],
+                            data['source']
+                        ))
 
-                except Exception as e:
-                    error_count += 1
-                    conn.rollback()  # 回滚失败的事务
-                    print(f'  [错误] {symbol} {year}Q{quarter}: {e}', flush=True)
+                        # 达到批次大小时提交
+                        if len(batch_buffer) >= BATCH_SIZE:
+                            count = _flush_batch(batch_buffer)
+                            total_records += count
+                            stock_records_count += count
+                            batch_buffer.clear()
 
-                time.sleep(0.05)
+                    except Exception as e:
+                        error_count += 1
+                        print(f'  [错误] {symbol} {year}Q{quarter}: {e}', flush=True)
 
-        # 每只股票完成后的日志
-        elapsed = (now() - start_time).total_seconds()
-        rate = total_records / elapsed if elapsed > 0 else 0
-        print(f'  [{idx+1:4d}/{total_stocks}] {symbol}: 新增{stock_records}条 跳过{stock_skip}条 | '
-              f'累计{total_records}条 错误{error_count}条 | {rate:.1f}条/秒', flush=True)
+                    time.sleep(0.05)
 
-    conn.close()
-    bs.logout()
+            # 每只股票完成后的日志
+            elapsed = (now() - start_time).total_seconds()
+            rate = total_records / elapsed if elapsed > 0 else 0
+            print(f'  [{idx+1:4d}/{total_stocks}] {symbol}: 新增{stock_records_count}条 跳过{stock_skip}条 | '
+                  f'累计{total_records}条 错误{error_count}条 | {rate:.1f}条/秒', flush=True)
+            stock_records_count = 0
+
+        # 提交剩余缓冲数据
+        if batch_buffer:
+            count = _flush_batch(batch_buffer)
+            total_records += count
+            batch_buffer.clear()
+
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        try:
+            bs.logout()
+        except Exception:
+            pass
+        _shutdown_baostock_executor()
 
     elapsed = (now() - start_time).total_seconds()
     print('-' * 70)

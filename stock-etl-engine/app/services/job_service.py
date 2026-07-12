@@ -4,6 +4,7 @@ from collections.abc import Callable
 from typing import Any
 
 from sqlalchemy.orm import Session
+import re
 import time
 import logging
 from app.repositories.job_repository import JobRepository
@@ -169,9 +170,46 @@ class JobService:
             success_log="日线同步完成",
         )
 
+    @staticmethod
+    def _natural_to_bs_quarter(month: int) -> int:
+        """自然月份 → Baostock API quarter 参数（1=Q1, 2=H1, 3=Q3, 4=annual）"""
+        if month <= 3:
+            return 1
+        elif month <= 6:
+            return 2
+        elif month <= 9:
+            return 3
+        else:
+            return 4
+
     def _dispatch_financial(self, task_id, job_name, biz_date, force):
         from app.jobs.etl_financial_indicator import main as financial_main
-        self._dispatch_simple(task_id, job_name, financial_main, "财务指标同步完成")
+        from app.core.timezone import now
+
+        # 从 job_name 解析 year/quarter（兼容手动触发与定时调度）：
+        #   financial_indicator_sync_2024_1       → year=2024, quarter=1 (Q1)
+        #   financial_indicator_sync_2023_2025    → start_year=2023, end_year=2025 (区间)
+        #   financial                            → 定时调度：用当前季度（回退逻辑）
+        m = re.search(r"financial_indicator_sync_(\d{4})_((\d{4}))?$", job_name)
+        if m:
+            year = int(m.group(1))
+            end_year = m.group(3)  # None → 单季度；有值 → 区间同步
+            if end_year is not None:
+                callable_fn = lambda y=year, ey=int(end_year): financial_main(start_year=y, end_year=ey)
+            else:
+                bs_quarter = self._natural_to_bs_quarter(now().month)
+                callable_fn = lambda y=year, q=bs_quarter: financial_main(sync_year=y, sync_quarter=q)
+        else:
+            # 定时调度 / 未知格式：取当前季度
+            current = now()
+            bs_quarter = self._natural_to_bs_quarter(current.month)
+            callable_fn = lambda y=current.year, q=bs_quarter: financial_main(sync_year=y, sync_quarter=q)
+
+        self._dispatch_simple(
+            task_id, job_name,
+            callable_fn=callable_fn,
+            success_log="财务指标同步完成",
+        )
 
     def _dispatch_factor(self, task_id, job_name, biz_date, force):
         from app.jobs.compute_factor import main as factor_main

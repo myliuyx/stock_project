@@ -110,24 +110,26 @@ def trigger_financial_sync(
             quarter = 4
         year = now.year
 
-    # 构造 job_name
+    # Baostock quarter → report_period 结束日（用于 biz_date）
+    _QUARTER_END_DAY = {1: "03-31", 2: "06-30", 3: "09-30", 4: "12-31"}
+
+    # 构造 job_name（含 year/quarter），ETL engine 的 _dispatch_financial 从中解析参数
     if start_year is not None and end_year is not None:
         job_name = f"financial_indicator_sync_{start_year}_{end_year}"
+        biz_date = f"{year}-{_QUARTER_END_DAY.get(quarter, '06-30')}"
     else:
-        job_name = f"financial_indicator_sync_{year}Q{quarter}"
+        job_name = f"financial_indicator_sync_{year}_{quarter}"
+        biz_date = f"{year}-{_QUARTER_END_DAY[quarter]}"
 
-    logger.info(f"【手动触发】财务指标同步 job={job_name}")
+    logger.info(f"【手动触发】财务指标同步 job={job_name}, biz_date={biz_date}")
 
     # 先创建 job 记录
     service = JobService(db)
-    job_id = service.init_job_run(job_name, str(year))
+    job_id = service.init_job_run(job_name, biz_date)
 
-    params = {}
-    if year is not None and quarter is not None:
-        params = {"SYNC_YEAR": str(year), "SYNC_QUARTER": str(quarter)}
-    elif start_year is not None and end_year is not None:
-        params = {"SYNC_START_YEAR": str(start_year), "SYNC_END_YEAR": str(end_year)}
-    result = service.trigger_etl(job_id, f"financial", str(year), False, params=params)
+    result = service.trigger_etl(
+        job_id, job_name, biz_date, False,
+    )
     if result["code"] != 0:
         return error_response(code=5021, message=result["message"])
     return success_response({
