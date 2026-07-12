@@ -61,7 +61,7 @@ def cleanup_old_logs():
         return
 
     log_dir_real = os.path.realpath(LOG_DIR)
-    cutoff = now() - timedelta(days=LOG_KEEP_DAYS)
+    cutoff = now().replace(tzinfo=None) - timedelta(days=LOG_KEEP_DAYS)
     removed = 0
     for fname in os.listdir(LOG_DIR):
         if not fname.endswith(".log"):

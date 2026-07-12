@@ -54,12 +54,6 @@ SYNC_CONFIG = {
     'rate_limit_delay': 0.3,   # 请求间隔 0.3s
 }
 
-# ── Step2/Step3: 定时任务超时保护 + 进度告警配置 ──
-MAX_SYNC_HOURS = 4          # 最大执行时间（小时），超过则主动退出并保存 checkpoint
-PROGRESS_CHECK_INTERVAL = 500  # 每处理 N 只股票记录一次进度报告
-
-BAOSTOCK_QUERY_TIMEOUT = 30  # 每个 Baostock API 调用的超时时间（秒）
-
 
 _TIMEOUT_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 
@@ -162,12 +156,12 @@ def update_job_run(conn, job_id: int, status: str = None, rows_raw: int = None,
     cursor.close()
 
 
-def save_checkpoint(conn, job_name: str, last_index: int, last_symbol: str, 
+def save_checkpoint(conn, job_name: str, last_index: int, last_symbol: str,
                     total_processed: int, stocks_success: int, stocks_skipped: int, stocks_failed: int,
                     biz_date: str):
-    """保存检查点"""
+    """保存检查点（单条多值 INSERT，减少 DB 往返）"""
     cursor = conn.cursor()
-    
+
     checkpoints = {
         'last_processed_index': str(last_index),
         'last_processed_symbol': last_symbol,
@@ -177,16 +171,24 @@ def save_checkpoint(conn, job_name: str, last_index: int, last_symbol: str,
         'stocks_failed': str(stocks_failed),
         'biz_date': biz_date,
     }
-    
+
+    if not checkpoints:
+        cursor.close()
+        return
+
+    # Build multi-value INSERT: VALUES (%s,%s,%s,%s),(%s,%s,%s,%s),...
+    params = []
     for key, value in checkpoints.items():
-        cursor.execute("""
-            INSERT INTO etl_checkpoint (job_name, checkpoint_key, checkpoint_value, updated_at)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (job_name, checkpoint_key) DO UPDATE SET
-                checkpoint_value = EXCLUDED.checkpoint_value,
-                updated_at = EXCLUDED.updated_at
-        """, (job_name, key, value, now()))
-    
+        params.extend([job_name, key, value, now()])
+
+    value_groups = ','.join(['(%s,%s,%s,%s)'] * len(checkpoints))
+    sql = f"""INSERT INTO etl_checkpoint (job_name, checkpoint_key, checkpoint_value, updated_at)
+              VALUES {value_groups}
+              ON CONFLICT (job_name, checkpoint_key) DO UPDATE SET
+                  checkpoint_value = EXCLUDED.checkpoint_value,
+                  updated_at = EXCLUDED.updated_at"""
+
+    cursor.execute(sql, tuple(params))
     conn.commit()
     cursor.close()
 
@@ -384,30 +386,6 @@ def fetch_daily_kline(code: str, start_date: str, end_date: str, extend_days: in
         return None
 
 
-def _do_fetch_adjust_factor(code, query_start, end_date):
-    """实际的 Baostock 复权因子查询（供 run_with_timeout 调用）"""
-    with _baostock_lock:
-        ensure_baostock_session()
-    rs = bs.query_adjust_factor(code=code, start_date=query_start, end_date=end_date)
-    if rs.error_code != '0':
-        return pd.DataFrame()
-    data_list = []
-    while rs.next():
-        data_list.append(rs.get_row_data())
-    return pd.DataFrame(data_list, columns=rs.fields) if data_list else pd.DataFrame()
-
-
-def fetch_adjust_factor(code: str, start_date: str, end_date: str) -> pd.DataFrame:
-    """获取复权因子（带超时保护）"""
-    query_start = (datetime.strptime(start_date, '%Y-%m-%d') - timedelta(days=730)).strftime('%Y-%m-%d')
-    try:
-        return run_with_timeout(_do_fetch_adjust_factor, BAOSTOCK_QUERY_TIMEOUT, code, query_start, end_date)
-    except TimeoutError:
-        logger = logging.getLogger(__name__)
-        logger.warning(f"  ⏰ 获取复权因子超时 {code} ({BAOSTOCK_QUERY_TIMEOUT}s)")
-        return pd.DataFrame()
-
-
 def safe_float(val):
     if val is None or val == '' or (isinstance(val, float) and pd.isna(val)):
         return None
@@ -415,6 +393,32 @@ def safe_float(val):
         return float(val)
     except (ValueError, TypeError):
         return None
+
+
+def fetch_adj_factor_for_stock(conn, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
+    """从 dwd_stock_adjust_factor 获取单只股票在日期范围内的复权因子事件
+
+    返回 DataFrame(columns=['trade_date', 'adj_factor'])，按日期升序。
+    无事件时返回空 DataFrame。
+    """
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT trade_date, adj_factor
+        FROM dwd_stock_adjust_factor
+        WHERE symbol = %s AND trade_date >= %s AND trade_date <= %s
+          AND adj_factor IS NOT NULL
+        ORDER BY trade_date ASC
+    """, (symbol, start_date, end_date))
+    rows = cur.fetchall()
+    cur.close()
+
+    if not rows:
+        return pd.DataFrame(columns=['trade_date', 'adj_factor'])
+
+    df = pd.DataFrame(rows, columns=['trade_date', 'adj_factor'])
+    df['trade_date'] = pd.to_datetime(df['trade_date'])
+    return df
+
 
 def symbol_to_baostock_code(symbol: str) -> str:
     """将标准symbol转换为baostock代码格式，如 000001.SZ -> sz.000001"""
@@ -541,35 +545,25 @@ def fetch_financial_from_baostock(baostock_code: str):
 
 # ========== 数据处理 ==========
 def calculate_derived_fields(
-    df: pd.DataFrame, 
-    adj_df: pd.DataFrame,
-    eps_ttm: float, 
-    total_share: float, 
+    df: pd.DataFrame,
+    eps_ttm: float,
+    total_share: float,
     liqa_share: float,
     roe_avg: float = None,
     mb_revenue: float = None
 ) -> pd.DataFrame:
-    """计算衍生字段"""
+    """计算衍生字段（adj_factor 由 process_single_stock 中 per-stock merge_asof + ffill 填充）"""
     if df.empty:
         return df
-    
-    # 合并复权因子
-    df['date'] = pd.to_datetime(df['date'])
-    if not adj_df.empty:
-        adj_df['dividOperateDate'] = pd.to_datetime(adj_df['dividOperateDate'])
-        adj_df = adj_df.sort_values('dividOperateDate')
 
-        df = pd.merge_asof(
-            df.sort_values('date'),
-            adj_df[['dividOperateDate', 'foreAdjustFactor']].sort_values('dividOperateDate'),
-            left_on='date',
-            right_on='dividOperateDate',
-            direction='backward'
-        )
-        df.rename(columns={'foreAdjustFactor': 'adj_factor'}, inplace=True)
-    else:
-        df['adj_factor'] = 1.0
-    
+    # adj_factor 不在这里计算 — 改为 process_single_stock 中逐只查询 dwd_stock_adjust_factor
+    # 并通过 merge_asof(direction='backward') + ffill carry-forward。
+    # 原因：Baostock query_adjust_factor 只返回事件日，非事件日需继承上一事件值。
+    # dwd_stock_adjust_factor 表已存储所有事件（有 idx_adjust_factor_symbol_trade_date 索引），
+    # per-stock 查询效率高，且只影响新增股票的数据行，不碰历史数据。
+
+    df['date'] = pd.to_datetime(df['date'])
+
     # 转换数值类型
     for col in ['open', 'high', 'low', 'close', 'preclose', 'volume', 'amount', 'turn', 'pctChg']:
         if col in df.columns:
@@ -642,32 +636,66 @@ def calculate_derived_fields(
 
 
 def process_single_stock(
-    code: str, 
-    start_date: str, 
+    code: str,
+    start_date: str,
     end_date: str,
-    eps_ttm: float = None, 
-    total_share: float = None, 
+    eps_ttm: float = None,
+    total_share: float = None,
     liqa_share: float = None,
     roe_avg: float = None,
     mb_revenue: float = None,
-    cached_adj_factor: float = None
+    adj_factor_conn=None,  # DB connection for adj_factor lookup
 ):
-    """处理单只股票（超时返回 None，空数据返回 []，成功返回 List[Dict]）"""
+    """处理单只股票（超时返回 None，空数据返回 []，成功返回 List[Dict]）
+
+    adj_factor 通过查询 dwd_stock_adjust_factor 并 merge_asof carry-forward。
+    """
     try:
         daily_df = fetch_daily_kline(code, start_date, end_date, extend_days=0)
         if daily_df is None:
             return None  # 超时标记
         if daily_df.empty:
             return []
-        
-        if cached_adj_factor is not None:
-            adj_df = pd.DataFrame()
-            result_df = calculate_derived_fields(daily_df, adj_df, eps_ttm, total_share, liqa_share, roe_avg, mb_revenue)
-            result_df['adj_factor'] = cached_adj_factor
+
+        result_df = calculate_derived_fields(daily_df, eps_ttm, total_share, liqa_share, roe_avg, mb_revenue)
+
+        # 从 dwd_stock_adjust_factor 获取事件日 adj_factor，merge_asof carry-forward
+        if adj_factor_conn is not None:
+            try:
+                symbol = normalize_symbol(code)
+                # 查询所有历史事件（从2015年起）以正确 carry-forward，而非仅同步日期范围
+                adj_df = fetch_adj_factor_for_stock(adj_factor_conn, symbol, '2015-01-01', end_date)
+                if not adj_df.empty:
+                    # 统一 datetime 精度（避免 merge_asof 类型不匹配）
+                    result_df['date'] = pd.to_datetime(result_df['date']).astype('datetime64[ns]')
+                    adj_df['trade_date'] = pd.to_datetime(adj_df['trade_date']).astype('datetime64[ns]')
+                    result_df = pd.merge_asof(
+                        result_df.sort_values('date'),
+                        adj_df.sort_values('trade_date'),
+                        left_on='date',
+                        right_on='trade_date',
+                        direction='backward'
+                    )
+                    result_df.rename(columns={'adj_factor': '_raw_adj_factor'}, inplace=True)
+                else:
+                    result_df['_raw_adj_factor'] = None
+
+                # 设置最终 adj_factor：有事件值用事件值，否则 carry-forward，都无则 1.0
+                result_df['adj_factor'] = result_df['_raw_adj_factor'].ffill().fillna(1.0)
+                if '_raw_adj_factor' in result_df.columns:
+                    result_df.drop(columns=['_raw_adj_factor'], inplace=True, errors='ignore')
+            except Exception as e2:
+                # 防止事务失败连锁：rollback 恢复连接状态，让后续股票能继续处理
+                try:
+                    adj_factor_conn.rollback()
+                except Exception:
+                    pass
+                logger = logging.getLogger(__name__)
+                logger.warning(f"获取 {code} 复权因子失败: {e2}")
+
         else:
-            adj_df = fetch_adjust_factor(code, start_date, end_date)
-            result_df = calculate_derived_fields(daily_df, adj_df, eps_ttm, total_share, liqa_share, roe_avg, mb_revenue)
-        
+            result_df['adj_factor'] = 1.0
+
         # 只保留目标日期范围内的数据（去掉延伸的历史部分）
         start_dt = pd.to_datetime(start_date)
         end_dt = pd.to_datetime(end_date)
@@ -801,7 +829,8 @@ def sync_stock_daily(force_restart: bool = False, start_date: str = None, end_da
     logger = setup_logging()
     
     # 判断是历史回填还是日常同步，用不同的 job_name 避免断点冲突
-    is_historical = (start_date is not None) or (end_date is not None)
+    is_single_day = (start_date is not None and end_date is not None and start_date == end_date)
+    is_historical = not is_single_day and (start_date is not None or end_date is not None)
     if is_historical:
         job_name = SYNC_CONFIG['job_name'] + '_historical'
         logger.info("📌 检测为历史回填模式，使用独立 job_name")
@@ -812,6 +841,8 @@ def sync_stock_daily(force_restart: bool = False, start_date: str = None, end_da
     start_time_dt = now()  # 记录开始时间（用于日志展示）
     start_ts = time.time()          # 记录开始时间戳（用于超时检查 + 进度计算）
     max_sync_seconds = MAX_SYNC_HOURS * 3600  # 最大执行秒数（4h）
+    current_batch_idx: int | None = None   # 当前批次索引（供异常处理块使用）
+    current_batch: pd.DataFrame | None = None  # 当前批次数据（供异常处理块使用）
     job_id = None  # 任务 ID，初始化为 None，避免 except 块中未定义
     
     logger.info("="*60)
@@ -911,8 +942,11 @@ def sync_stock_daily(force_restart: bool = False, start_date: str = None, end_da
         # ========== 处理每批股票 ==========
         batch_count = 0
         _consecutive_timeout = 0  # 连续超时计数，用于触发 Baostock 重连
+        all_updated_symbols: list[str] = []  # 累积已写入的 symbol，供最终 volume_ratio 统一计算
         for i in range(start_index, total_stocks, SYNC_CONFIG['batch_size']):
-            batch = stocks_df.iloc[i:i+SYNC_CONFIG['batch_size']]
+            current_batch_idx = i
+            batch = stocks_df.iloc[i:i + SYNC_CONFIG['batch_size']]
+            current_batch = batch
             batch_num = (i // SYNC_CONFIG['batch_size']) + 1
             total_batches = (total_stocks + SYNC_CONFIG['batch_size'] - 1) // SYNC_CONFIG['batch_size']
 
@@ -948,11 +982,10 @@ def sync_stock_daily(force_restart: bool = False, start_date: str = None, end_da
             
             for j, (_, stock) in enumerate(batch.iterrows()):
                 ticker = str(stock['ticker']).zfill(6)  # 补零到6位，如 '1' -> '000001'
-                exchange = stock['exchange'].lower()  # 'SH' -> 'sh', 'SZ' -> 'sz'
-                baostock_code = f"{exchange}.{ticker}"  # e.g., 'sh.600000'
-                
+                baostock_code = f"{stock['exchange'].lower()}.{ticker}"  # e.g., 'sh.600000'
+
                 # ========== 预检查：跳过库中已有完整数据的股票 ==========
-                stock_symbol = normalize_symbol(baostock_code)
+                stock_symbol = all_symbols[i + j]  # Use precomputed symbol (L912)
                 date_range = stock_date_map.get(stock_symbol)
                 if date_range:
                     min_date_in_db, max_date_in_db = date_range
@@ -1046,9 +1079,9 @@ def sync_stock_daily(force_restart: bool = False, start_date: str = None, end_da
                     logger.warning(f"  ⚠️ 获取财务数据失败 {ticker}，本次日线数据将无财务指标: {e}")
                 
                 # 获取日K线（只拉缺失的日期范围）
-                stock_data = process_single_stock(baostock_code, fetch_start_date, end_date_str, eps_ttm, total_share, liqa_share, roe_avg, mb_revenue, None)
+                stock_data = process_single_stock(baostock_code, fetch_start_date, end_date_str, eps_ttm, total_share, liqa_share, roe_avg, mb_revenue, adj_factor_conn=conn)
                 if stock_data:
-                    logger.info(f"  -> {ticker} 获取 {len(stock_data)} 条数据")
+                    logger.debug(f"  -> {ticker} 获取 {len(stock_data)} 条数据")
                 
                 # 判断成功/失败
                 days_needed = (datetime.strptime(end_date_str, '%Y-%m-%d') - datetime.strptime(fetch_start_date, '%Y-%m-%d')).days
@@ -1080,7 +1113,9 @@ def sync_stock_daily(force_restart: bool = False, start_date: str = None, end_da
                     batch_data.extend(stock_data)
                     batch_success += 1
                     stocks_success += 1
-                elif is_incremental_short:
+                elif is_incremental_short and fetch_start_date != end_date_str:
+                    # 仅对真正的"短范围增量拉取"才跳过（如补几天数据）
+                    # 单日同步 (fetch_start_date == end_date_str) 不应跳过，即使 Baostock 返回空
                     _consecutive_timeout = 0
                     batch_skipped += 1
                     stocks_skipped += 1
@@ -1103,9 +1138,8 @@ def sync_stock_daily(force_restart: bool = False, start_date: str = None, end_da
                     written = upsert_daily_data(conn, batch_data)
                     logger.info(f"  ✅ 写入 {written} 条 (跳过:{batch_skipped} 成功:{batch_success} 失败:{batch_fail})")
 
-                    # 批量计算 volume_ratio（从本地 DB 查历史，不用额外调 Baostock）
-                    batch_symbols = [d['symbol'] for d in batch_data]
-                    update_volume_ratio(conn, biz_date, batch_symbols)
+                    # 累积 symbol，供最终 volume_ratio 统一计算（避免每批重复查历史）
+                    all_updated_symbols.extend(d['symbol'] for d in batch_data)
                 except Exception as e:
                     logger.error(f"  ❌ 写入失败: {e}")
                     # 即使写入失败，也继续处理下一批，不中断整个任务
@@ -1120,7 +1154,13 @@ def sync_stock_daily(force_restart: bool = False, start_date: str = None, end_da
                 logger.info(f"  💾 检查点已保存 (index={i + len(batch) - 1})")
             
             time.sleep(1)
-        
+
+        # ========== 所有批次完成后，统一计算 volume_ratio（单条 SQL，不用额外调 Baostock）==========
+        if all_updated_symbols:
+            logger.info(f"📊 批量计算量比: {len(all_updated_symbols)} 只股票")
+            update_volume_ratio(conn, biz_date, all_updated_symbols)
+            logger.info("✅ 量比计算完成")
+
         # ========== 最终检查点 ==========
         save_checkpoint(conn, job_name, total_stocks - 1, '', 
                        total_processed, stocks_success, stocks_skipped, stocks_failed, biz_date)
@@ -1157,9 +1197,12 @@ def sync_stock_daily(force_restart: bool = False, start_date: str = None, end_da
     except KeyboardInterrupt:
         logger.warning("\n⚠️ 用户中断，保存检查点...")
         update_job_run(conn, job_id, status='FAILED', error_message='用户中断')
-        if conn and (i if 'i' in dir() else None) is not None:
-            save_checkpoint(conn, job_name, i, 
-                           batch.iloc[-1]['ticker'] if 'batch' in dir() and len(batch) > 0 else '',
+        if conn and current_batch_idx is not None:
+            last_ticker = ''
+            if current_batch is not None and len(current_batch) > 0:
+                last_ticker = str(current_batch.iloc[-1]['ticker'])
+            save_checkpoint(conn, job_name, current_batch_idx,
+                           last_ticker,
                            total_processed, stocks_success, stocks_skipped, stocks_failed, biz_date)
         if conn:
             conn.close()

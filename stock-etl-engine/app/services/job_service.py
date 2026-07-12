@@ -161,10 +161,12 @@ class JobService:
     def _dispatch_daily_kline(self, task_id, job_name, biz_date, force):
         from app.jobs.sync_stock_daily import sync_stock_daily
         trade_date = resolve_date(biz_date)
+        # sync_stock_daily 内部已通过 update_job_run(rows_written=stocks_success) 更新状态，
+        # 此处不传 rows_written，避免 _dispatch_simple 覆盖为默认值 0。
         self._dispatch_simple(
             task_id, job_name,
             callable_fn=lambda: sync_stock_daily(force_restart=force, start_date=trade_date, end_date=trade_date, task_id=task_id),
-            success_log="日线同步完成", rows_written=0,
+            success_log="日线同步完成",
         )
 
     def _dispatch_financial(self, task_id, job_name, biz_date, force):
@@ -181,7 +183,11 @@ class JobService:
 
     def _dispatch_cleanup(self, task_id, job_name, biz_date, force):
         from app.scheduler import run_cleanup_logs_job
-        run_cleanup_logs_job(task_id, job_name, biz_date, force)
+        self._dispatch_simple(
+            task_id, job_name,
+            callable_fn=lambda: run_cleanup_logs_job(task_id, job_name, biz_date, force),
+            success_log="日志清理完成",
+        )
 
     def _dispatch_trade_calendar(self, task_id, job_name, biz_date, force):
         from app.jobs.sync_trade_calendar import sync_trade_calendar
