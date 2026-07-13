@@ -458,12 +458,12 @@ def create_scheduler() -> BackgroundScheduler:
         trigger=CronTrigger(day_of_week="0-4", hour=17, minute=30, timezone='Asia/Shanghai'),
     )
 
-    # run_financial_indicator_sync 不自管理 etl_job_run，需包装记录创建
-    add_safe_job(
-        _wrap_job_for_record(run_financial_indicator_sync, "financial_indicator_sync"),
-        "financial_indicator_sync", "财务指标同步",
-        trigger=CronTrigger(hour=21, minute=30, day_of_week="0-4", timezone='Asia/Shanghai'),  # Before factor_compute at 22:30
-    )
+#     # run_financial_indicator_sync 不自管理 etl_job_run，需包装记录创建
+#     add_safe_job(
+#         _wrap_job_for_record(run_financial_indicator_sync, "financial_indicator_sync"),
+#         "financial_indicator_sync", "财务指标同步",
+#         trigger=CronTrigger(hour=21, minute=30, day_of_week="0-4", timezone='Asia/Shanghai'),  # Before factor_compute at 22:30
+#     )
 
     # run_daily_sync (sync_stock_daily) 自管理 etl_job_run，不需额外包装
     add_safe_job(
