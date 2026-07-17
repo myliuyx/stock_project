@@ -315,17 +315,104 @@ _baostock_lock = threading.RLock()  # 保护 Baostock 连接的线程锁（可�
 
 
 def login_baostock():
+    """单次尝试登录（内部使用，直接返回 bs.login() 的结果）。外部统一调用 login_with_retry。"""
     old_timeout = socket.getdefaulttimeout()
     socket.setdefaulttimeout(BAOSTOCK_SOCKET_TIMEOUT)
     try:
         lg = bs.login()
         if lg.error_code != '0':
+            msg = f"error_code={lg.error_code}"
+            error_msg_str = getattr(lg, 'error_msg', None)
+            if error_msg_str:
+                msg += f" ({error_msg_str})"
             socket.setdefaulttimeout(old_timeout)
-            return False
-        return True
-    except Exception:
+            return False, msg
+        return True, None
+    except Exception as e:
         socket.setdefaulttimeout(old_timeout)
-        return False
+        return False, str(e)
+
+
+def login_with_retry(max_attempts=None):
+    """登录 Baostock，失败后指数退避重试。
+
+    策略：首次等待 30s → 60s → 90s … 每次 +30s，最高到 max_backoff (300s)。
+    全部耗尽后返回 False（由上层标记 FAILED）。
+    """
+    if max_attempts is None:
+        max_attempts = SYNC_CONFIG.get('retry_times', 5) + 2   # 原始次数 + 初始尝试，默认 7
+
+    base_delay = SYNC_CONFIG.get('retry_delay', 30)          # 基础等待秒数
+    max_backoff = SYNC_CONFIG.get('max_reconnect_backoff', 300)  # 最大退避秒数
+    logger_instance = logging.getLogger(__name__)
+    attempt = 0
+
+    while True:
+        attempt += 1
+        logger_instance.info(f"🔐 Baostock 登录尝试 {attempt}/{max_attempts}")
+        ok, err_msg = login_baostock()
+        if ok:
+            logger_instance.info("✅ Baostock 登录成功")
+            return True
+
+        # 失败：判断是否还有重试机会
+        if attempt >= max_attempts:
+            msg = f"❌ Baostock 登录耗尽所有尝试（{max_attempts}次），任务将失败: {err_msg}"
+            logger_instance.error(msg)
+            return False
+
+        delay = min(base_delay * attempt, max_backoff)
+        logger_instance.warning(f"⚠️ Baostock 登录失败 ({attempt}/{max_attempts}): {err_msg}，{delay}s 后重试")
+        time.sleep(delay)
+
+
+def connect_with_retry(max_attempts=None):
+    """先 logout 再 login，带指数退避重试（用于 ensure_baostock_session / 超时重连）。
+
+    与 login_with_retry 的区别：内部会自动 bs.logout() + sleep 1s。
+    全部失败后返回 False，调用方可决定是否终止任务。
+    """
+    if max_attempts is None:
+        max_attempts = SYNC_CONFIG.get('retry_times', 5) + 2
+
+    base_delay = 30
+    max_backoff = 300
+    logger_instance = logging.getLogger(__name__)
+    attempt = 0
+
+    while True:
+        attempt += 1
+        try:
+            bs.logout()
+        except Exception:
+            pass
+
+        if attempt > 1:
+            delay = min(base_delay * (attempt - 1), max_backoff)
+            logger_instance.warning(f"⚠️ Baostock 重新登录尝试 {attempt}/{max_attempts}，等待 {delay}s")
+            time.sleep(delay)
+
+        socket.setdefaulttimeout(BAOSTOCK_SOCKET_TIMEOUT)
+        try:
+            lg = bs.login()
+            if lg.error_code == '0':
+                logger_instance.info("✅ Baostock 重新登录成功")
+                return True
+
+            err_msg = f"error_code={lg.error_code}"
+            error_msg_str = getattr(lg, 'error_msg', None)
+            if error_msg_str:
+                err_msg += f" ({error_msg_str})"
+        except Exception as e:
+            err_msg = str(e)
+
+        if attempt >= max_attempts:
+            msg = f"⚠️ Baostock 重新登录耗尽所有尝试（{max_attempts}次）: {err_msg}"
+            logger_instance.warning(msg)
+            return False
+
+        delay = min(base_delay * attempt, max_backoff)
+        logger_instance.warning(f"⚠️ Baostock 重新登录失败 ({attempt}/{max_attempts}): {err_msg}，{delay}s 后重试")
 
 
 def logout_baostock():
@@ -340,17 +427,10 @@ def ensure_baostock_session():
         if _baostock_api_calls > BAOSTOCK_RECONNECT_THRESHOLD:
             logger = logging.getLogger(__name__)
             logger.info(f"  🔄 Baostock API 已调用 {_baostock_api_calls} 次，重新登录保持连接")
-            try:
-                bs.logout()
-            except Exception:
-                pass
-            time.sleep(1)
-            socket.setdefaulttimeout(BAOSTOCK_SOCKET_TIMEOUT)
-            lg = bs.login()
-            if lg.error_code == '0':
-                logger.info("  ✅ Baostock 重新登录成功")
-            else:
-                logger.warning(f"  ⚠️ Baostock 重新登录失败: {lg.error_code}")
+            # 指数退避重试重连（最多尝试 7 次）
+            if not connect_with_retry():
+                # 全部失败：继续执行（后续拉取仍会工作，但 baostock 可能不稳定）
+                logger.warning("  Baostock 重新登录全部失败，任务将继续运行")
             _baostock_api_calls = 0
 
 
@@ -849,25 +929,33 @@ def sync_stock_daily(force_restart: bool = False, start_date: str = None, end_da
     logger.info("日线行情同步开始")
     logger.info(f"任务名称: {job_name}")
     logger.info("="*60)
-    
-    # 登录 Baostock
-    if not login_baostock():
-        logger.error("Baostock 登录失败")
-        return
-    
+
+    # ── 先建立 DB 连接 & 创建 RUNNING 任务记录 ────────────────
+    conn = get_db_connection()
+
+    if task_id is not None:
+        job_id = task_id
+        add_job_log(conn, job_id, "INFO", f"使用外部 job_id={job_id}，跳过 init_job_run")
+        logger.info(f"✅ 使用外部 job_id={job_id}")
+    else:
+        job_id = init_job_run(conn, job_name, biz_date)
+        add_job_log(conn, job_id, "INFO", f"任务记录已创建，job_name={job_name}, biz_date={biz_date}")
+        logger.info(f"✅ 任务记录已创建 (job_id={job_id})")
+
+    # ── Baostock 登录（带指数退避重试） ────────────────
+    if not login_with_retry():
+        add_job_log(conn, job_id, "ERROR", "Baostock 登录失败：所有重试耗尽，任务终止")
+        update_job_run(conn, job_id, status='FAILED', error_message="Baostock login exhausted all retries")
+        logger.error("❌ Baostock 登录失败，任务已标记 FAILED")
+        conn.close()
+        raise RuntimeError("Baostock login exhausted all retries")
+
+    # ── 登录成功，进入同步流程 ────────────────
+
     try:
-        conn = get_db_connection()
-        
-        # 创建任务记录 (有 task_id 时使用外部传入的，避免重复创建)
-        if task_id is not None:
-            job_id = task_id
-            add_job_log(conn, job_id, "INFO", f"使用外部 job_id={job_id}，跳过 init_job_run")
-            logger.info(f"✅ 使用外部 job_id={job_id}")
-        else:
-            job_id = init_job_run(conn, job_name, biz_date)
-            add_job_log(conn, job_id, "INFO", f"任务记录已创建，job_name={job_name}, biz_date={biz_date}")
-            logger.info(f"✅ 任务记录已创建 (job_id={job_id})")
-        
+        # conn already open from above — reuse it for the entire sync body
+        pass
+
         # ========== 检查断点 ==========
         start_index = 0
         total_processed = 0
@@ -1094,20 +1182,13 @@ def sync_stock_daily(force_restart: bool = False, start_date: str = None, end_da
                     logger.warning(f"  ❌ {ticker} Baostock 超时({_consecutive_timeout}次连续)，标记为失败")
                     if _consecutive_timeout >= 3:
                         logger.warning(f"  🔄 连续 {_consecutive_timeout} 只超时，强制重新登录 Baostock")
-                        try:
-                            bs.logout()
-                        except Exception:
-                            pass
-                        time.sleep(3)
-                        socket.setdefaulttimeout(BAOSTOCK_SOCKET_TIMEOUT)
-                        lg = bs.login()
-                        if lg.error_code == '0':
-                            logger.info("  ✅ Baostock 重新登录成功")
-                        else:
-                            logger.warning(f"  ⚠️ Baostock 重新登录失败: {lg.error_code}")
+                        # 指数退避重试重连（最多尝试 5 次）
+                        reconnected = connect_with_retry(max_attempts=5)
                         _consecutive_timeout = 0
                         with _baostock_lock:
                             _baostock_api_calls = 0
+                        if not reconnected:
+                            logger.warning("  Baostock 重新登录全部失败，后续股票可能继续超时")
                 elif stock_data:
                     _consecutive_timeout = 0
                     batch_data.extend(stock_data)
