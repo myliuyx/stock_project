@@ -1,6 +1,7 @@
 import jwt
-from datetime import datetime, timedelta
+from datetime import timedelta
 from sqlalchemy.orm import Session
+from app.core.timezone import now
 from app.repositories.auth_repository import AuthRepository
 from app.core.config import settings
 

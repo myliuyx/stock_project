@@ -1,6 +1,6 @@
 services:
   etl-engine:
-    image: stock-etl-engine:1.6.2
+    image: stock-etl-engine:latest
     build:
       context: ../stock-etl-engine
       dockerfile: Dockerfile

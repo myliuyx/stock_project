@@ -1195,13 +1195,19 @@ def sync_stock_daily(force_restart: bool = False, start_date: str = None, end_da
                     batch_success += 1
                     stocks_success += 1
                 elif is_incremental_short and fetch_start_date != end_date_str:
-                    # 仅对真正的"短范围增量拉取"才跳过（如补几天数据）
-                    # 单日同步 (fetch_start_date == end_date_str) 不应跳过，即使 Baostock 返回空
+                    # 短范围增量拉取无新数据（补几天 / 周末节假日），跳过
                     _consecutive_timeout = 0
                     batch_skipped += 1
                     stocks_skipped += 1
                     logger.info(f"  ⏭️ {ticker} 增量拉取无新数据（{fetch_start_date}~{end_date_str}，疑似周末/节假日），跳过")
+                elif not stock_data:
+                    # 单日同步时 Baostock 返回空数据：新股未上市、已退市等正常情况，不算失败只算跳过
+                    _consecutive_timeout = 0
+                    batch_skipped += 1
+                    stocks_skipped += 1
+                    logger.warning(f"⚠️ {ticker} Baostock 无当日数据（可能退市/尚未上市），跳过")
                 else:
+                    # 防御性：理论上不会到达这里（前面已覆盖 None、truthy、empty 全部路径）
                     _consecutive_timeout = 0
                     batch_fail += 1
                     stocks_failed += 1
