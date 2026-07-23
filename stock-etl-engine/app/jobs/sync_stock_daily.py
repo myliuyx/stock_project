@@ -429,9 +429,9 @@ def ensure_baostock_session():
             logger.info(f"  🔄 Baostock API 已调用 {_baostock_api_calls} 次，重新登录保持连接")
             # 指数退避重试重连（最多尝试 7 次）
             if not connect_with_retry():
-                # 全部失败：继续执行（后续拉取仍会工作，但 baostock 可能不稳定）
-                logger.warning("  Baostock 重新登录全部失败，任务将继续运行")
-            _baostock_api_calls = 0
+                logger.warning("  Baostock 重新登录全部失败，保留计数器，下次调用继续尝试重连")
+            else:
+                _baostock_api_calls = 0
 
 
 def _do_fetch_daily_kline(code, query_start, end_date):
@@ -453,17 +453,43 @@ def _do_fetch_daily_kline(code, query_start, end_date):
 
 
 def fetch_daily_kline(code: str, start_date: str, end_date: str, extend_days: int = 0):
-    """获取日K线数据（带超时保护，超时返回 None）"""
+    """获取日K线数据（带超时保护和重试，超时返回 None）
+
+    baostock API 网络抖动时可能间歇性返回空 DataFrame（非超时），而非实际无数据。
+    对空结果也做最多 2 次重试（每次间隔 2s），避免单次抖动导致整只股票被标记为失败。
+    """
     query_start = start_date
     if extend_days > 0:
         query_start = (datetime.strptime(start_date, '%Y-%m-%d') - timedelta(days=extend_days)).strftime('%Y-%m-%d')
-    
-    try:
-        return run_with_timeout(_do_fetch_daily_kline, BAOSTOCK_QUERY_TIMEOUT, code, query_start, end_date)
-    except TimeoutError:
-        logger = logging.getLogger(__name__)
-        logger.warning(f"  ⏰ 获取日K线超时 {code} ({BAOSTOCK_QUERY_TIMEOUT}s)")
-        return None
+
+    max_retries = 2  # baostock 网络抖动重试次数（超时/空结果均适用）
+    for attempt in range(max_retries + 1):
+        try:
+            result = run_with_timeout(_do_fetch_daily_kline, BAOSTOCK_QUERY_TIMEOUT, code, query_start, end_date)
+            if result is not None and not result.empty:
+                return result
+            if attempt < max_retries:
+                logger = logging.getLogger(__name__)
+                logger.warning(f"  ⏰ {code} 获取日K线结果为空，第 {attempt+1}/{max_retries} 次重试")
+                time.sleep(2)
+                continue
+            return result
+        except TimeoutError:
+            logger = logging.getLogger(__name__)
+            if attempt < max_retries:
+                logger.warning(f"  ⏰ {code} 获取日K线超时 ({BAOSTOCK_QUERY_TIMEOUT}s)，第 {attempt+1}/{max_retries} 次重试")
+                time.sleep(2)
+                continue
+            logger.warning(f"  ⏰ {code} 获取日K线超时 ({BAOSTOCK_QUERY_TIMEOUT}s)，重试耗尽")
+            return None
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            if attempt < max_retries:
+                logger.warning(f"  ⚠️ {code} 获取日K线异常: {e}，第 {attempt+1}/{max_retries} 次重试")
+                time.sleep(2)
+                continue
+            logger.warning(f"  ⚠️ {code} 获取日K线异常，重试耗尽: {e}")
+            return None
 
 
 def safe_float(val):
@@ -1029,7 +1055,8 @@ def sync_stock_daily(force_restart: bool = False, start_date: str = None, end_da
         logger.info(f"📊 批量查询 {len(stock_date_map)} 只股票的日期范围完成")
         # ========== 处理每批股票 ==========
         batch_count = 0
-        _consecutive_timeout = 0  # 连续超时计数，用于触发 Baostock 重连
+        _consecutive_errors = 0  # 连续失败计数：超时(None)、异常、baostock网络抖动导致空结果([])均计入
+                                  # baostock 抖动时可能间歇返回空列表（非实际无数据），与超时视为同一类问题
         all_updated_symbols: list[str] = []  # 累积已写入的 symbol，供最终 volume_ratio 统一计算
         for i in range(start_index, total_stocks, SYNC_CONFIG['batch_size']):
             current_batch_idx = i
@@ -1176,39 +1203,38 @@ def sync_stock_daily(force_restart: bool = False, start_date: str = None, end_da
                 is_incremental_short = (days_needed <= 5) and (max_date_in_db is not None)
                 
                 if stock_data is None:
-                    _consecutive_timeout += 1
+                    _consecutive_errors += 1
                     batch_fail += 1
                     stocks_failed += 1
-                    logger.warning(f"  ❌ {ticker} Baostock 超时({_consecutive_timeout}次连续)，标记为失败")
-                    if _consecutive_timeout >= 3:
-                        logger.warning(f"  🔄 连续 {_consecutive_timeout} 只超时，强制重新登录 Baostock")
-                        # 指数退避重试重连（最多尝试 5 次）
+                    logger.warning(f"  ❌ {ticker} Baostock 失败({_consecutive_errors}次连续：超时/空结果)，标记为失败")
+                    if _consecutive_errors >= 3:
+                        logger.warning(f"  🔄 连续 {_consecutive_errors} 只失败，强制重新登录 Baostock")
                         reconnected = connect_with_retry(max_attempts=5)
-                        _consecutive_timeout = 0
-                        with _baostock_lock:
-                            _baostock_api_calls = 0
-                        if not reconnected:
-                            logger.warning("  Baostock 重新登录全部失败，后续股票可能继续超时")
+                        if reconnected:
+                            _consecutive_errors = 0
+                            with _baostock_lock:
+                                _baostock_api_calls = 0
+                        else:
+                            logger.warning("  Baostock 重新登录全部失败，后续股票可能继续失败")
                 elif stock_data:
-                    _consecutive_timeout = 0
+                    _consecutive_errors = 0
                     batch_data.extend(stock_data)
                     batch_success += 1
                     stocks_success += 1
                 elif is_incremental_short and fetch_start_date != end_date_str:
                     # 短范围增量拉取无新数据（补几天 / 周末节假日），跳过
-                    _consecutive_timeout = 0
+                    _consecutive_errors = 0
                     batch_skipped += 1
                     stocks_skipped += 1
                     logger.info(f"  ⏭️ {ticker} 增量拉取无新数据（{fetch_start_date}~{end_date_str}，疑似周末/节假日），跳过")
                 elif not stock_data:
-                    # 单日同步时 Baostock 返回空数据：新股未上市、已退市等正常情况，不算失败只算跳过
-                    _consecutive_timeout = 0
+                    _consecutive_errors += 1
                     batch_skipped += 1
                     stocks_skipped += 1
                     logger.warning(f"⚠️ {ticker} Baostock 无当日数据（可能退市/尚未上市），跳过")
                 else:
                     # 防御性：理论上不会到达这里（前面已覆盖 None、truthy、empty 全部路径）
-                    _consecutive_timeout = 0
+                    _consecutive_errors = 0
                     batch_fail += 1
                     stocks_failed += 1
                 
