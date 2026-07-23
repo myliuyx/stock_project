@@ -34,10 +34,10 @@ ETL Engine 已从 v0.5.0 起独立为单独的微服务，负责所有定时任�
 │    Vue 3 | TypeScript | Element Plus | ECharts            │
 │   控制台 │ 选股 │ 个股 │ 板块 │ 策略分析 │ 任务监控        │
 └─────────────────────┬────────────────────────────────────┘
-                      │ /api → http://localhost:8081/api/v1
+                      │ /api → http://localhost:8000/api/v1
 ┌─────────────────────▼────────────────────────────────────┐
-│              stock-fast-api (:8081)                       │
-│   FastAPI | SQLAlchemy 12个Router | ~50端点               │
+│              stock-fast-api (:8000)                       │
+│   FastAPI | SQLAlchemy 11个Router | ~50端点               │
 │   Router → Schema → Service → Repository                  │
 │   HTTP 调用 ETL Engine 执行任务                           │
 └───────────┬──────────────────────┬────────────────────────┘
@@ -76,14 +76,14 @@ cp stock-fast-api/.env.example stock-fast-api/.env
 # 编辑 .env 填入数据库和 JWT 配置
 
 # 一键启动所有服务（PostgreSQL + FastAPI + ETL Engine）
-docker compose up -d
+cd stock-fast-api && docker compose up -d
 
 # 前端开发模式
 cd stock-front_ui
 npm install && npm run dev
 ```
 
-> **端口说明**：FastAPI `:8081`，ETL Engine Docker `:8001`，前端 `:5173`（开发），PostgreSQL `:5432`
+> **端口说明**：FastAPI `:8000`，ETL Engine Docker `:8001`，前端 `:5173`（开发），PostgreSQL `:5432`
 
 #### 方式二：手动部署
 
@@ -106,8 +106,8 @@ cp .env.example .env
 # 初始化数据库
 psql -h <host> -U <user> -d <dbname> -f docs/09_postgresql_ddl.sql
 
-# 启动服务（端口 :8081）
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8081
+# 启动服务（端口 :8000）
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 **ETL Engine：**
@@ -130,7 +130,7 @@ cd stock-front_ui
 
 npm install
 npm run dev
-# 访问 http://localhost:5173（/api 代理到 :8081）
+# 访问 http://localhost:5173（/api 代理到 :8000）
 ```
 
 ### 环境变量说明
@@ -151,7 +151,7 @@ npm run dev
 
 ```
 stock_project/
-├── stock-fast-api/          # FastAPI 后端 REST API（:8081）
+├── stock-fast-api/          # FastAPI 后端 REST API（:8000）
 │   ├── app/
 │   │   ├── core/            # 配置、数据库连接、异常、响应封装
 │   │   ├── routers/         # API 路由模块（12个文件，~50端点）
@@ -166,7 +166,7 @@ stock_project/
 │   ├── src/
 │   │   ├── api/             # Axios 请求层（12个模块）
 │   │   ├── components/      # 按模块分类的 Vue 组件
-│   │   ├── pages/           # 路由页面组件（17个）
+│   │   ├── views/           # 路由页面组件（16个）
 │   │   ├── stores/          # Pinia 状态管理
 │   │   └── layouts/         # 主布局组件
 ├── stock-etl-engine/        # ETL 引擎独立微服务（Docker :8001 / 内网 :8082）
@@ -196,7 +196,7 @@ stock_project/
 
 ### API 文档
 
-API 前缀：`/api/v1`（后端端口 :8081）
+API 前缀：`/api/v1`（后端端口 :8000）
 
 | 模块 | 端点数 | 说明 |
 |------|--------|------|
@@ -223,14 +223,15 @@ API 前缀：`/api/v1`（后端端口 :8081）
 
 | # | 任务名 | Cron 时间 | 说明 |
 |---|--------|----------|------|
-| 1 | 新股板块增量同步 | **17:30** | 近7天上市新股及其所属板块 |
-| 2 | 股票主数据同步 | **18:00** | 全市场股票基础信息 |
-| 3 | 日线行情同步 | **19:00** | 全市场行情 OHLCV 数据 |
-| 4 | 技术因子计算 | **23:00** | MA/RSI/MACD/BOLL 等指标 |
-| 5 | 选股宽表构建 | **23:30** | 汇总行情+因子+财务 → 选股分析 |
+| 1 | 新股板块增量同步 | **17:10** | 近7天上市新股及其所属板块 |
+| 2 | 复权因子同步 | **17:30** | OHLCV 价格调整因子 |
+| 3 | 股票主数据同步 | **23:50** | 全市场股票基础信息 |
+| 4 | 日线行情同步 | **19:00** | 全市场行情 OHLCV 数据 |
+| 5 | 技术因子计算 | **23:00** | MA/RSI/MACD/BOLL 等指标 |
+| 6 | 选股宽表构建 | **23:30** | 汇总行情+因子+财务 → 选股分析 |
 | — | 日志清理 | 每日 00:05（独立） | 清理超3天日志文件 |
 
-> ⏸️ 已暂停：复权因子同步 (原20:00)、财务指标同步 (原21:30) —— 仍可通过手动触发接口调用。
+> ⏸️ 已暂停：财务指标同步 (原21:30) —— 仍可通过手动触发接口调用。
 
 ### 相关文档
 
@@ -273,10 +274,10 @@ ETL Engine was decoupled into an independent microservice in v0.5.0 for all sche
 │   Vue 3 | TypeScript | Element Plus | ECharts          │
 │   Dashboard │ Selection │ Stock │ Strategies │ Jobs    │
 └─────────────────────┬─────────────────────────────────┘
-                      │ /api → http://localhost:8081/api/v1
+                      │ /api → http://localhost:8000/api/v1
 ┌─────────────────────▼─────────────────────────────────┐
-│          stock-fast-api (:8081)                        │
-│   FastAPI | SQLAlchemy | 12 Routers | ~50 endpoints    │
+│          stock-fast-api (:8000)                        │
+│   FastAPI | SQLAlchemy | 11 Routers | ~50 endpoints    │
 │   Router → Schema → Service → Repository               │
 │   HTTP calls to ETL Engine for async job execution     │
 └───────────┬─────────────────────┬──────────────────────┘
@@ -315,14 +316,14 @@ cp stock-fast-api/.env.example stock-fast-api/.env
 # Edit .env with your database and JWT settings
 
 # Start all services (PostgreSQL + FastAPI + ETL Engine)
-docker compose up -d
+cd stock-fast-api && docker compose up -d
 
 # Frontend dev mode
 cd stock-front_ui
 npm install && npm run dev
 ```
 
-> **Ports**: FastAPI `:8081`, ETL Engine Docker `:8001`, Frontend `:5173` (dev), PostgreSQL `:5432`
+> **Ports**: FastAPI `:8000`, ETL Engine Docker `:8001`, Frontend `:5173` (dev), PostgreSQL `:5432`
 
 #### Option 2: Manual Setup
 
@@ -345,8 +346,8 @@ cp .env.example .env
 # Initialize database
 psql -h <host> -U <user> -d <dbname> -f docs/09_postgresql_ddl.sql
 
-# Start server (port :8081)
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8081
+# Start server (port :8000)
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 **ETL Engine:**
@@ -369,7 +370,7 @@ cd stock-front_ui
 
 npm install
 npm run dev
-# Visit http://localhost:5173 (/api proxied to :8081)
+# Visit http://localhost:5173 (/api proxied to :8000)
 ```
 
 ### Environment Variables
@@ -390,10 +391,10 @@ npm run dev
 
 ```
 stock_project/
-├── stock-fast-api/          # FastAPI REST API backend (:8081)
+├── stock-fast-api/          # FastAPI REST API backend (:8000)
 │   ├── app/
 │   │   ├── core/            # Config, DB connection, exceptions, response
-│   │   ├── routers/         # API route modules (12 files, ~50 endpoints)
+│   │   ├── routers/         # API route modules (11 files, ~50 endpoints)
 │   │   ├── schemas/         # Pydantic data models
 │   │   ├── services/        # Business logic (10 services)
 │   │   ├── repositories/    # Data access layer (10 repos)
@@ -403,9 +404,9 @@ stock_project/
 │   └── docker-compose.yml   # Docker deployment config
 ├── stock-front_ui/          # Vue 3 frontend (:5173 dev)
 │   ├── src/
-│   │   ├── api/             # Axios API layer (12 modules)
+│   │   ├── api/             # Axios API layer (11 modules)
 │   │   ├── components/      # Vue components by module
-│   │   ├── pages/           # Route page components (17 pages)
+│   │   ├── views/           # Route page components (16 pages)
 │   │   ├── stores/          # Pinia state management
 │   │   └── layouts/         # Main layout component
 ├── stock-etl-engine/        # ETL engine microservice (:8001 Docker / :8082 internal)
@@ -435,7 +436,7 @@ stock_project/
 
 ### API Documentation
 
-API base URL: `/api/v1` (backend port :8081)
+API base URL: `/api/v1` (backend port :8000)
 
 | Module | Endpoints | Description |
 |--------|-----------|-------------|
@@ -462,14 +463,15 @@ All times in Beijing time (UTC+8), auto-executes Mon-Fri:
 
 | # | Task Name | Cron Time | Description |
 |---|-----------|----------|-------------|
-| 1 | New IPO Board Sync | **17:30** | Recent 7-day IPO stocks and their boards |
-| 2 | Stock Master Data Sync | **18:00** | Full market stock basic info |
-| 3 | Daily OHLCV Sync | **19:00** | Full market daily OHLCV data |
-| 4 | Technical Factor Compute | **23:00** | MA/RSI/MACD/BOLL etc. indicators |
-| 5 | Selection Mart Build | **23:30** | Aggregate OHLCV+factors+finance → screening analysis |
+| 1 | New IPO Board Sync | **17:10** | Recent 7-day IPO stocks and their boards |
+| 2 | Adjustment Factor Sync | **17:30** | Price adjustment factors for OHLCV |
+| 3 | Stock Master Data Sync | **23:50** | Full market stock basic info |
+| 4 | Daily OHLCV Sync | **19:00** | Full market daily OHLCV data |
+| 5 | Technical Factor Compute | **23:00** | MA/RSI/MACD/BOLL etc. indicators |
+| 6 | Selection Mart Build | **23:30** | Aggregate OHLCV+factors+finance → screening analysis |
 | — | Log Cleanup | Daily 00:05 (independent) | Clean logs >3 days old |
 
-> ⏸️ Paused: Adjustment factor sync (was 20:00), Financial indicator sync (was 21:30) — still accessible via manual trigger API.
+> ⏸️ Paused: Financial indicator sync (was 21:30) — still accessible via manual trigger API.
 
 ### Related Documents
 

@@ -13,7 +13,7 @@ The project is a three-service monorepo with the ETL engine decoupled as an inde
 | Service | Directory | Port | Role | Tech Stack |
 |---------|-----------|------|------|------------|
 | **Frontend** | `stock-front_ui/` | 5173 | Web dashboard | Vue 3, TypeScript, Vite, Element Plus |
-| **Backend API** | `stock-fast-api/` | 8081 | REST API & job orchestration | FastAPI, SQLAlchemy, Python |
+| **Backend API** | `stock-fast-api/` | 8000 | REST API & job orchestration | FastAPI, SQLAlchemy, Python |
 | **ETL Engine** | `stock-etl-engine/` | 8002* | Data scraping & processing | FastAPI, APScheduler, Python |
 
 *\*Internal port: 8082. Docker mapped port: 8001.*
@@ -26,10 +26,10 @@ The project is a three-service monorepo with the ETL engine decoupled as an inde
 │    Vue 3 | TypeScript | Element Plus | ECharts            │
 │   Dashboard | Selection | Stock Analysis | Job Monitor    │
 └─────────────────────┬────────────────────────────────────┘
-                      │ /api → http://localhost:8081/api/v1
+                      │ /api → http://localhost:8000/api/v1
 ┌─────────────────────▼────────────────────────────────────┐
-│              stock-fast-api (:8081)                       │
-│   FastAPI | SQLAlchemy 12 Routers | ~50 endpoints         │
+│              stock-fast-api (:8000)                       │
+│   FastAPI | SQLAlchemy 11 Routers | ~50 endpoints          │
 │   Router → Schema → Service → Repository                  │
 │   HTTP calls to ETL Engine for async job execution        │
 └───────────┬──────────────────────┬────────────────────────┘
@@ -50,11 +50,11 @@ The project is a three-service monorepo with the ETL engine decoupled as an inde
 
 ```bash
 # Start all services with Docker (recommended)
-docker compose up -d
+cd stock-fast-api && docker compose up -d
 
 # Individual service startup
 cd stock-front_ui && npm install && npm run dev          # Frontend (:5173)
-cd stock-fast-api && ./venv/bin/uvicorn app.main:app --reload  # Backend (:8081)
+cd stock-fast-api && ./venv/bin/uvicorn app.main:app --reload  # Backend (:8000)
 cd stock-etl-engine && ./venv/bin/uvicorn app.main:app --reload  # ETL Engine (:8082)
 
 # Database initialization (manual setup only)
@@ -125,14 +125,15 @@ python -m py_compile app/repositories/example.py
 
 | Job | Cron | Description | Status |
 |-----|------|-------------|--------|
-| New IPO Board Sync | 17:30 daily | Recent IPO stocks + board assignments | Active |
-| Stock Master Data Sync | 18:00 daily | Full market stock basic info | Active |
-| Daily OHLCV Sync | 19:00 daily | Complete market daily OHLCV data | Active |
-| Technical Factor Compute | 23:00 daily | MA/RSI/MACD/BOLL indicators | Active |
-| Selection Mart Build | 23:30 daily | Stock screening wide table aggregation | Active |
+| New IPO Board Sync | 17:10 Mon-Fri | Recent IPO stocks + board assignments | Active |
+| Adjustment Factor Sync | 17:30 Mon-Fri | Price adjustment factors for OHLCV | Active |
+| Stock Master Data Sync | 23:50 Mon-Fri | Full market stock basic info | Active |
+| Daily OHLCV Sync | 19:00 Mon-Fri | Complete market daily OHLCV data | Active |
+| Technical Factor Compute | 23:00 Mon-Fri | MA/RSI/MACD/BOLL indicators | Active |
+| Selection Mart Build | 23:30 Mon-Fri | Stock screening wide table aggregation | Active |
 | Log Cleanup | 00:05 daily | Remove logs >3 days old | Active |
 
-> **Paused**: Adjustment factor sync (was 20:00), Financial indicator sync (was 21:30) — still accessible via manual trigger API.
+> **Paused**: Financial indicator sync (was 21:30) — still accessible via manual trigger API.
 
 ## Documentation Index
 
