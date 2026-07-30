@@ -45,3 +45,5 @@ build/
 
 # Uvicorn
 *.pid
+# Tests
+tests/

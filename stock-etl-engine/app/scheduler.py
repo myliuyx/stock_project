@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+import threading
 from app.core.timezone import now
 import logging
 import os
@@ -390,6 +391,31 @@ def _scheduler_event_listener(event):
         logger.info(f"【调度器事件】任务执行成功: {event.job_id}")
 
 
+def _wrap_with_timeout(func, timeout_sec=28800):  # 8h default
+    """Thread-level timeout wrapper for scheduled jobs."""
+    def wrapper(*args, **kwargs):
+        result = [None]
+        exception_holder = [None]
+
+        def target():
+            try:
+                result[0] = func(*args, **kwargs)
+            except Exception as e:
+                exception_holder[0] = e
+
+        t = threading.Thread(target=target)
+        t.daemon = True
+        t.start()
+        t.join(timeout=timeout_sec)
+
+        if t.is_alive():
+            raise TimeoutError(f"Job exceeded {timeout_sec}s timeout")
+        if exception_holder[0]:
+            raise exception_holder[0]
+        return result[0]
+    return wrapper
+
+
 def create_scheduler() -> BackgroundScheduler:
     global _active_scheduler
 
@@ -409,20 +435,24 @@ def create_scheduler() -> BackgroundScheduler:
         EVENT_JOB_ERROR | EVENT_JOB_EXECUTED,
     )
 
-    def add_safe_job(func, job_id, name, **kwargs):
+    def add_safe_job(func, job_id, name, *, with_record=False, **kwargs):
         """Add a job that catches exceptions and logs them properly.
 
-        修复前（Step1）: @with_job_timeout 使用 signal.alarm() 在线程中报 ValueError →
-          safe_wrapper except Exception 只打日志不 re-raise → APScheduler 误判 SUCCESS → next_run_at=明天
+        All jobs get thread-level timeout protection (default 8h).
+        Jobs that do not self-manage etl_job_run can pass with_record=True
+        to have _wrap_job_for_record applied automatically.
 
-        修复后: 所有异常都 re-raise，APScheduler 正确标记 FAILED 并保留当天触发
-
-        但 APScheduler 的后台线程机制保证了调度器本身不会崩溃。
+        Wrapper order: timeout → safe_wrapper → (_wrap_job_for_record) → func
         """
-        @wraps(func)
+        if with_record:
+            func = _wrap_job_for_record(func, job_id)
+
+        wrapped = _wrap_with_timeout(func)
+
+        @wraps(wrapped)
         def safe_wrapper():
             try:
-                func()
+                wrapped()
             except Exception as e:
                 logger.error(f"【定时任务】{name} 执行出错: {e}")
                 import traceback
@@ -442,8 +472,8 @@ def create_scheduler() -> BackgroundScheduler:
 
     # run_security_master_sync 不自管理 etl_job_run，需包装记录创建
     add_safe_job(
-        _wrap_job_for_record(run_security_master_sync, "security_master_sync"),
-        "security_master_sync", "股票主数据同步",
+        run_security_master_sync, "security_master_sync", "股票主数据同步",
+        with_record=True,
         trigger=CronTrigger(hour=23, minute=50, day_of_week="0-4", timezone='Asia/Shanghai'),
     )
 
@@ -473,20 +503,20 @@ def create_scheduler() -> BackgroundScheduler:
 
     # run_factor_compute / run_selection_mart / cleanup_old_logs 不自管理 etl_job_run，需包装记录创建
     add_safe_job(
-        _wrap_job_for_record(run_factor_compute, "factor_compute"),
-        "factor_compute", "技术因子计算",
+        run_factor_compute, "factor_compute", "技术因子计算",
+        with_record=True,
         trigger=CronTrigger(hour=23, minute=0, day_of_week="0-4", timezone='Asia/Shanghai'),
     )
 
     add_safe_job(
-        _wrap_job_for_record(run_selection_mart, "selection_mart"),
-        "selection_mart", "选股宽表构建",
+        run_selection_mart, "selection_mart", "选股宽表构建",
+        with_record=True,
         trigger=CronTrigger(hour=23, minute=30, day_of_week="0-4", timezone='Asia/Shanghai'),
     )
 
     add_safe_job(
-        _wrap_job_for_record(cleanup_old_logs, "cleanup_logs"),
-        "cleanup_logs", "日志清理",
+        cleanup_old_logs, "cleanup_logs", "日志清理",
+        with_record=True,
         trigger=CronTrigger(hour=0, minute=5, timezone='Asia/Shanghai'),
     )
 

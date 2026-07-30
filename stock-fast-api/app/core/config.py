@@ -3,7 +3,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     APP_NAME: str = "A股股票数据API"
-    APP_VERSION: str = "0.8.15"
+    APP_VERSION: str = "0.8.16"
     API_PREFIX: str = "/api/v1"
 
     # 数据库配置（必须通过环境变量设置）

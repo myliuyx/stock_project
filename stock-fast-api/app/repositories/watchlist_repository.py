@@ -1,4 +1,6 @@
 from datetime import datetime
+
+from app.core.timezone import now as dt_now
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 

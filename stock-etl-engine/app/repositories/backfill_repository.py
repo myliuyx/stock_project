@@ -122,8 +122,9 @@ class BackfillRepository:
             updates.append("error_message = :error_message")
             params["error_message"] = error_message
 
+        sql = "UPDATE etl_backfill_task SET " + ", ".join(updates) + " WHERE id = :task_id"
         self.db.execute(
-            text(f"UPDATE etl_backfill_task SET {', '.join(updates)} WHERE id = :task_id"),
+            text(sql),
             params,
         )
         self.db.commit()

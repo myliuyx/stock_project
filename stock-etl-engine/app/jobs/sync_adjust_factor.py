@@ -141,9 +141,9 @@ def _update_job_record(conn, job_id: int, status: str = None, rows_written: int 
         )
 
     if updates:
-        cur.execute(f"""
-            UPDATE etl_job_run SET {', '.join(updates)} WHERE id = %s
-        """, params + [job_id])
+        set_clause = ", ".join(updates)
+        sql = f"UPDATE etl_job_run SET {set_clause} WHERE id = %s"
+        cur.execute(sql, params + [job_id])
         conn.commit()
     cur.close()
 
@@ -270,13 +270,13 @@ def main(task_id: int = None, start_year: int | None = None, end_year: int | Non
         _sync_start = int(start_year)
     else:
         env_start = os.environ.get('SYNC_START_YEAR')
-        _sync_start = int(env_start) if env_start else (datetime.now().year - 3)
+        _sync_start = int(env_start) if env_start else (now().year - 3)
 
     if end_year is not None:
         _sync_end = int(end_year)
     else:
         env_end = os.environ.get('SYNC_END_YEAR')
-        _sync_end = int(env_end) if env_end else datetime.now().year
+        _sync_end = int(env_end) if env_end else now().year
 
     logger.info("=" * 70)
     logger.info("  复权因子同步 (dwd_stock_adjust_factor)")
@@ -296,7 +296,7 @@ def main(task_id: int = None, start_year: int | None = None, end_year: int | Non
         # 独立运行（__main__/手动），自己创建任务记录和连接
         try:
             conn = _make_conn()
-            today_str = datetime.now().strftime('%Y-%m-%d')
+            today_str = now().strftime('%Y-%m-%d')
             job_id = _init_job_record(conn, "adjust_factor_sync", today_str)
             logger.info(f"任务记录已创建 (job_id={job_id})")
         except Exception as e:

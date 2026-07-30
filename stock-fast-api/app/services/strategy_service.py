@@ -1,3 +1,4 @@
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.repositories.strategy_repository import StrategyRepository, STRATEGY_METADATA, _safe_float
@@ -60,7 +61,7 @@ class StrategyService:
         trade_date = req.trade_date
         if not trade_date:
             result = self.db.execute(
-                __import__("sqlalchemy").text(
+                text(
                     "SELECT MAX(trade_date) FROM dwd_stock_daily WHERE symbol = :symbol AND trade_date <= CURRENT_DATE"
                 ),
                 {"symbol": req.symbol},
@@ -73,7 +74,7 @@ class StrategyService:
         results = self.repo.analyze_stock(req.symbol, trade_date)
 
         # 获取股票基础信息
-        sql = __import__("sqlalchemy").text("""
+        sql = text("""
             SELECT m.symbol, m.name, m.exchange,
                    d.close, d.change_pct, d.turnover_rate_f as turnover_rate, d.volume_ratio,
                    f.ma5, f.ma10, f.ma20, f.trend_score

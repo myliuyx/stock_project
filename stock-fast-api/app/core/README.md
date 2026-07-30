@@ -22,7 +22,7 @@ from app.core.config import settings
 settings.APP_NAME       # = "A股股票数据API"
 settings.APP_VERSION    # = "0.1.0"
 settings.API_PREFIX     # = "/api/v1"
-settings.DB_HOST        # = "192.168.3.16"
+settings.DB_HOST        # = "192.168.3.31"
 settings.DB_PORT        # = 5432
 settings.DB_NAME        # = "stock_cache_system"
 settings.DB_USER        # = "postgres"

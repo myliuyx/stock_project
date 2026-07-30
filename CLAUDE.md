@@ -6,98 +6,119 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **A股股票信息缓存系统** — A local data analysis platform for China's A-share market that synchronizes daily market data from baostock/efinance into PostgreSQL and provides a web dashboard for stock screening, individual stock analysis, sector analysis, and ETL job monitoring.
 
-### Service Topology (v0.5.0)
+### Service Topology (v1.6.x)
 
-The project is a three-service monorepo with the ETL engine decoupled as an independent microservice:
+Three-service monorepo with the ETL engine decoupled as an independent microservice:
 
-| Service | Directory | Port | Role | Tech Stack |
-|---------|-----------|------|------|------------|
-| **Frontend** | `stock-front_ui/` | 5173 | Web dashboard | Vue 3, TypeScript, Vite, Element Plus |
-| **Backend API** | `stock-fast-api/` | 8000 | REST API & job orchestration | FastAPI, SQLAlchemy, Python |
-| **ETL Engine** | `stock-etl-engine/` | 8002* | Data scraping & processing | FastAPI, APScheduler, Python |
-
-*\*Internal port: 8082. Docker mapped port: 8001.*
+| Service | Directory | Docker Port | Local Dev Port | Role |
+|---------|-----------|-------------|----------------|------|
+| **Frontend** | `stock-front_ui/` | — | 5173 | Web dashboard | Vue 3, TypeScript, Vite, Element Plus |
+| **Backend API** | `stock-fast-api/` | 8000 | 8081 | REST API & job orchestration | FastAPI, SQLAlchemy, Python |
+| **ETL Engine** | `stock-etl-engine/` | 8001 | 8082 (local) | Data scraping & processing | FastAPI, APScheduler, Python |
 
 ### Architecture Flow
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                  stock-front_ui (:5173)                   │
-│    Vue 3 | TypeScript | Element Plus | ECharts            │
-│   Dashboard | Selection | Stock Analysis | Job Monitor    │
-└─────────────────────┬────────────────────────────────────┘
-                      │ /api → http://localhost:8000/api/v1
-┌─────────────────────▼────────────────────────────────────┐
-│              stock-fast-api (:8000)                       │
-│   FastAPI | SQLAlchemy 11 Routers | ~50 endpoints          │
-│   Router → Schema → Service → Repository                  │
-│   HTTP calls to ETL Engine for async job execution        │
-└───────────┬──────────────────────┬────────────────────────┘
+┌───────────────────────────────────────────────────────┐
+│              stock-front_ui (:5173 dev / :80 prod)     │
+│   Vue 3 | TS | Element Plus | ECharts | lightweight-charts
+│   Dashboard | Selection | Stock Analysis | Jobs        │
+└─────────────────────┬─────────────────────────────────┘
+                      │ /api → http://localhost:8000/api/v1 (Docker)
+                      │                    or :8081 (local dev)
+┌─────────────────────▼─────────────────────────────────┐
+│          stock-fast-api (:8000 Docker / :8081 local)   │
+│   FastAPI | SQLAlchemy 12 routers | ~50 endpoints      │
+│   Router → Schema → Service → Repository (raw SQL)     │
+│   HTTP calls to ETL Engine for async job execution     │
+└───────────┬──────────────────────┬──────────────────────┘
             │                      │ (shared database)
-┌───────────▼──────────────────────▼────────────────────────┐
-│              PostgreSQL (:5432)                           │
-│     16 tables | ~6M+ rows                                 │
-└───────────────────────────────────────────────────────────┘
+┌───────────▼──────────────────────▼──────────────────────┐
+│         PostgreSQL (:5432)                               │
+│      16 tables | ~6M+ rows                               │
+└─────────────────────────────────────────────────────────┘
 
-┌───────────────────────────────────────────────────────────┐
-│           stock-etl-engine (:8001 Docker / :8082)         │
-│     APScheduler | 7 active scheduled jobs                 │
-│     Data sources: baostock, efinance                      │
-└───────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────┐
+│    stock-etl-engine (:8001 Docker / :8082 local)        │
+│   APScheduler | 10 job scripts (6 active + paused)      │
+│   Data sources: baostock, efinance                      │
+└────────────────────────────────────────────────────────┘
 ```
 
 ## Global Commands
 
+### Start All Services (Docker)
+
 ```bash
-# Start all services with Docker (recommended)
-cd stock-fast-api && docker compose up -d
-
-# Individual service startup
-cd stock-front_ui && npm install && npm run dev          # Frontend (:5173)
-cd stock-fast-api && ./venv/bin/uvicorn app.main:app --reload  # Backend (:8000)
-cd stock-etl-engine && ./venv/bin/uvicorn app.main:app --reload  # ETL Engine (:8082)
-
-# Database initialization (manual setup only)
-psql -h <host> -U <user> -d <dbname> -f docs/09_postgresql_ddl.sql
+cd stock-fast-api
+cp .env.example .env  # edit with DB and JWT settings
+docker compose up -d
+# PostgreSQL :5432, FastAPI :8000, ETL Engine :8001
 ```
 
-## Testing & Linting
+### Individual Service Local Dev
 
-### Backend (stock-fast-api)
 ```bash
-# Run all tests
-./venv/bin/pytest
+# Frontend (port 5173)
+cd stock-front_ui && npm install && npm run dev
 
-# Run specific test file
-./venv/bin/pytest tests/test_example.py -v
+# Backend (port 8081 local; production port is 8000 via Docker)
+cd stock-fast-api && ./venv/bin/uvicorn app.main:app --reload --host 0.0.0.0 --port 8081
+
+# ETL Engine (port 8082 local; Docker maps external :8001 → internal :8082)
+cd stock-etl-engine && ./venv/bin/uvicorn app.main:app --reload --port 8082
+```
+
+### Testing & Verification
+
+```bash
+# Backend tests (pytest, no fixtures beyond venv)
+cd stock-fast-api && ./venv/bin/pytest                  # all tests
+./venv/bin/pytest tests/test_xxx.py -v                   # single file
 
 # Syntax check
-python -m py_compile app/repositories/example.py
+python -m py_compile app/repositories/xxx.py
+
+# Verify API
+curl http://localhost:8081/api/v1/system/meta             # backend health
+curl http://localhost:8001/                                # ETL engine health
+
+# Frontend build (includes vue-tsc type checking)
+cd stock-front_ui && npm run build
 ```
 
-### Frontend (stock-front_ui)
-- No dedicated test framework; TypeScript strict mode via `vue-tsc` in build process
-- Build command: `npm run build` (includes type checking)
+## Architecture Patterns
 
-## Key Architecture Patterns
+### Backend API Flow (`stock-fast-api`)
 
-### Backend API Flow
-1. **Router Layer** (`app/routers/`) → Receives requests, calls services, returns unified responses
-2. **Schema Layer** (`app/schemas/`) → Pydantic models for request/response validation  
-3. **Service Layer** (`app/services/`) → Business logic and data aggregation
-4. **Repository Layer** (`app/repositories/`) → Raw SQL queries via SQLAlchemy `text()` (no ORM)
+**Router → Schema → Service → Repository**:
 
-### ETL Engine Architecture
-- **Scheduler Orchestration**: APScheduler manages 7 active cron jobs with DB tracking
+| Layer | Directory | Purpose |
+|-------|-----------|---------|
+| Router | `app/routers/` (12 files) | Receive requests, call services, return unified responses |
+| Schema | `app/schemas/` (10 files) | Pydantic models for request/response validation |
+| Service | `app/services/` (9 files) | Business logic and data aggregation |
+| Repository | `app/repositories/` (10 files) | Raw SQL queries via SQLAlchemy `text()` — **no ORM** |
+
+Key core files: `core/config.py` (env vars), `core/deps.py` (DI: get_db, get_current_user), `core/exceptions.py` (BizException), `core/response.py` (unified envelope), `middleware/rate_limit.py`.
+
+### ETL Engine Architecture (`stock-etl-engine`)
+
+- **Scheduler**: APScheduler manages cron jobs with DB tracking in `scheduler.py` (~495 lines)
 - **Job Tracking**: Each job creates RUNNING record in `etl_job_run`, updates status on completion/failure
-- **Safety Wrapper**: Individual job failures don't crash the scheduler via `_wrap_job_for_record()`
+- **Safety Wrapper**: `_wrap_job_for_record()` catches exceptions, logs error, marks FAILED — individual failures don't crash the scheduler
 - **Trade Day Guard**: Checks `dwd_trade_calendar` before running daily syncs
+- **Lock File**: Uses `fcntl.flock` to prevent duplicate schedulers
+- **Authentication**: Backend-to-ETL requires `X-API-Key` header matching `ETL_ENGINE_API_KEY`; health check endpoints exempt
 
-### Frontend Architecture  
-- **API Layer**: Axios with unified error handling and Bearer token injection
-- **State Management**: Pinia stores for auth, jobs (with 10s polling), selection templates
-- **Routing**: History mode with lazy-loaded components and auth guard
-- **Components**: Organized by domain (charts, tables, forms) with virtual scrolling for large datasets
+### Frontend Architecture (`stock-front_ui`)
+
+- **API Layer**: Axios with unified error handling, Bearer token injection from localStorage, business error code handling
+- **State Management**: Pinia stores — auth/app (token, user), job (10s polling for RUNNING jobs), selectionTemplate, tradeDate
+- **Routing**: History mode, lazy-loaded components, auth guard checks `localStorage.getItem('token')`
+- **Components**: Organized by domain (base, dashboard, job, selection, stock, strategy)
+- **Charts**: lightweight-charts for K-line, ECharts for volume/regular charts
+- **Virtual Scrolling**: vue-virtual-scroller for large tables (>500 rows) via VirtualTable
 
 ## Unified Conventions
 
@@ -106,62 +127,69 @@ python -m py_compile app/repositories/example.py
 {"code": 0, "message": "success", "data": {...}}
 ```
 
-### Error Handling
-- Backend: Business exceptions defined in `app/core/exceptions.py`
-- Frontend: HTTP errors (401→login redirect, 403/5xx→user-friendly messages)
-- ETL Engine: Job failures logged and marked as FAILED without stopping scheduler
+### Pagination Format
+```json
+{"list": [...], "page": 1, "page_size": 20, "total": N}
+```
 
-### Database Access Patterns
-- **Backend**: SQLAlchemy `text()` for raw SQL execution via `self.db.execute(text(sql), params)`
-- **ETL Engine**: Direct psycopg2 connections (no SQLAlchemy ORM)
-- **Timezone**: Always use `from app.core.timezone import now` — never bare `datetime.now()`
+### Adding New Endpoints (Backend)
+Follow: **Schema → Repository → Service → Router**. If target table has no data, keep Mock with `// TODO` comment for real SQL. Repository uses `self.db.execute(text(sql), params)` — never ORM.
 
-### Authentication & Security
-- JWT tokens stored in localStorage, injected as `Authorization: Bearer` header
-- Backend-EtL communication requires `X-API-Key` header matching `ETL_ENGINE_API_KEY`
-- Health check endpoints exempt from API key validation
+### Timezone
+Always use `from app.core.timezone import now` — never bare `datetime.now()`.
 
-## Scheduled Jobs (Beijing Time UTC+8)
+### Port Reference (Quick)
 
-| Job | Cron | Description | Status |
-|-----|------|-------------|--------|
-| New IPO Board Sync | 17:10 Mon-Fri | Recent IPO stocks + board assignments | Active |
-| Adjustment Factor Sync | 17:30 Mon-Fri | Price adjustment factors for OHLCV | Active |
-| Stock Master Data Sync | 23:50 Mon-Fri | Full market stock basic info | Active |
-| Daily OHLCV Sync | 19:00 Mon-Fri | Complete market daily OHLCV data | Active |
-| Technical Factor Compute | 23:00 Mon-Fri | MA/RSI/MACD/BOLL indicators | Active |
-| Selection Mart Build | 23:30 Mon-Fri | Stock screening wide table aggregation | Active |
-| Log Cleanup | 00:05 daily | Remove logs >3 days old | Active |
+| Service | Docker | Local Dev | Notes |
+|---------|--------|-----------|-------|
+| Frontend | 80 (Nginx) | 5173 (Vite HMR) | — |
+| Backend API | 8000 | 8081 | Docker-compose maps :8000; local dev uses :8081 |
+| ETL Engine | 8001 (ext) / 8082 (int) | 8082 | App listens on 8082 internally |
+| PostgreSQL | 5432 | 5432 | — |
 
-> **Paused**: Financial indicator sync (was 21:30) — still accessible via manual trigger API.
+## Scheduled Jobs (ETL Engine, Beijing Time UTC+8)
+
+| Job | Cron | Script | Status |
+|-----|------|--------|--------|
+| New IPO Board Sync | 17:10 Mon-Fri | `sync_new_ipo_boards.py` | Active |
+| Daily OHLCV Sync | 19:00 Mon-Fri | `sync_stock_daily.py` | Active |
+| Adjustment Factor Sync | 20:00 (paused) | `sync_adjust_factor.py` | Paused |
+| Financial Indicator Sync | 21:30 (paused) | `etl_financial_indicator.py` | Paused |
+| Technical Factor Compute | 23:00 Mon-Fri | `compute_factor.py` | Active |
+| Selection Mart Build | 23:30 Mon-Fri | `build_selection_mart.py` | Active |
+| Stock Master Data Sync | 18:00 daily | `sync_security_master.py` | Active |
+| Log Cleanup | 00:05 daily | scheduler.py internal | Active |
+
+> Paused jobs are still accessible via manual trigger API from the backend.
+
+## Task Classification (Backend Development)
+
+| Type | Scenario | Process |
+|------|----------|---------|
+| A-class | Mock → real SQL | Full flow (Schema→Repo→Service→Router) |
+| B-class | New endpoint | Full flow |
+| C-class | Bug fixes | Skip design, locate and fix quickly |
+| D-class | Database changes | DDL first |
+| E-class | ETL script modifications | Independent flow |
+| F-class | Documentation maintenance | Lightweight |
+
+## Self-Testing Checklist (Backend)
+
+```bash
+# 1. Syntax check → python -m py_compile app/repositories/xxx.py
+# 2. Start test server → ./venv/bin/uvicorn app.main:app --reload --port 8081
+# 3. Verify with curl → curl http://localhost:8081/api/v1/stocks/search?keyword=茅台
+```
 
 ## Documentation Index
 
-For detailed information about specific services, refer to their sub-project CLAUDE.md files:
-- **Backend Development**: [`stock-fast-api/CLAUDE.md`](./stock-fast-api/CLAUDE.md)
-- **Frontend Development**: [`stock-front_ui/CLAUDE.md`](./stock-front_ui/CLAUDE.md)  
-- **ETL Engine**: [`stock-etl-engine/CLAUDE.md`](./stock-etl-engine/CLAUDE.md)
-
-### Core Documentation
-- [Quick Start Guide](docs/QUICK_START.md) — Setup and deployment instructions
-- [API Registry](stock-fast-api/docs/REGISTRY.md) — Complete API documentation (50 endpoints)
-- [Database Design](stock-fast-api/docs/A股股票信息缓存系统数据库设计文档.md) — Table structures and relationships
-- [Architecture Design](stock-fast-api/docs/A股股票信息缓存系统架构设计文档.md) — System architecture details
-
-## Development Workflow
-
-### Task Classification
-| Type | Description | Approach |
-|------|-------------|----------|
-| A-class | Mock interface to real SQL | Full development flow |
-| B-class | New endpoint (after frontend/backend agreement) | Full development flow |  
-| C-class | Bug fixes | Quick locate and fix, skip technical design |
-| D-class | Database changes (new table/field/index) | Database first approach |
-| E-class | ETL script modifications | Independent flow |
-| F-class | Documentation maintenance | Lightweight process |
-
-### Self-Testing Checklist
-1. **Syntax check**: `python -m py_compile app/repositories/example.py`
-2. **Start services**: Run backend and frontend locally
-3. **API verification**: Test endpoints with curl or API client
-4. **Database validation**: Verify data integrity in PostgreSQL
+| Document | Location | Description |
+|----------|----------|-------------|
+| **Sub-project CLAUDE.md** | `stock-fast-api/CLAUDE.md`, `stock-front_ui/CLAUDE.md`, `stock-etl-engine/CLAUDE.md` | Service-specific details, file indexes |
+| [Quick Start](docs/QUICK_START.md) | Root `docs/` | Setup and deployment guide (bilingual) |
+| [User Guide](docs/USER_GUIDE.md) | Root `docs/` | Feature usage instructions |
+| [Troubleshooting](docs/TROUBLESHOOTING.md) | Root `docs/` | Common issues and fixes |
+| [API Registry](stock-fast-api/docs/REGISTRY.md) | Backend `docs/` | **Authoritative API docs** (~50 endpoints) |
+| [Database Design](stock-fast-api/docs/A股股票信息缓存系统数据库设计文档.md) | Backend `docs/` | Table structures and relationships |
+| [Architecture Design](stock-fast-api/docs/A股股票信息缓存系统架构设计文档.md) | Backend `docs/` | System architecture details |
+| [DDL Script](docs/09_postgresql_ddl.sql) | Root `docs/` | PostgreSQL DDL (16 tables) |

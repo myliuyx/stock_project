@@ -147,10 +147,9 @@ def update_job_run(conn, job_id: int, status: str = None, rows_raw: int = None,
         params.append(now())
     
     if updates:
-        cursor.execute(f"""
-            UPDATE etl_job_run SET {', '.join(updates)}
-            WHERE id = %s
-        """, params + [job_id])
+        set_clause = ", ".join(updates)
+        sql = f"UPDATE etl_job_run SET {set_clause} WHERE id = %s"
+        cursor.execute(sql, params + [job_id])
         conn.commit()
     
     cursor.close()

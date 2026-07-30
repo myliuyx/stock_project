@@ -245,7 +245,7 @@ class JobRepository:
                 "duration_ms = EXTRACT(EPOCH FROM (NOW() - start_time))::bigint * 1000"
             )
 
-        sql = f"UPDATE etl_job_run SET {', '.join(updates)} WHERE id = :job_id"
+        sql = "UPDATE etl_job_run SET " + ", ".join(updates) + " WHERE id = :job_id"
 
         for attempt in range(1, self.DB_RETRY_COUNT + 1):
             try:

@@ -890,7 +890,7 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8082"]
 - [ ] **Step 3: Create `.env.example`**
 
 ```txt
-DB_HOST=192.168.3.16
+DB_HOST=192.168.3.31
 DB_PORT=5432
 DB_NAME=stock_cache_system
 DB_USER=postgres
