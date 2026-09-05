@@ -62,9 +62,11 @@ docker compose up -d
 
 # Services running:
 #   PostgreSQL    → localhost:5432
-#   FastAPI       → http://localhost:8081 (API docs at /docs)
+#   FastAPI       → http://localhost:8000 (Docker, API docs at /docs)
 #   ETL Engine    → Docker :8001 / internal :8082
 ```
+
+> **端口说明**: Docker 后端端口为 **:8000**，本地开发使用 **:8081**。前端 Nginx proxy_pass 指向 `localhost:8000`。
 
 #### Step 5: Start Frontend (Dev Mode)
 
@@ -73,7 +75,7 @@ cd stock-front_ui
 
 npm install && npm run dev
 # Frontend available at http://localhost:5173
-# (/api requests proxied to backend :8081)
+# (/api requests proxied to backend :8000 in Docker / :8081 in local dev)
 ```
 
 ### Option 2: Manual Setup
@@ -92,7 +94,7 @@ cp .env.example .env
 
 psql -h <host> -U <user> -d <dbname> -f docs/09_postgresql_ddl.sql
 
-# Start server (port :8081)
+# Start server (local dev port :8081; Docker uses :8000)
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8081
 ```
 
@@ -105,7 +107,7 @@ python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 
-# Start ETL engine (internal :8082, Docker maps external :8001)
+# Start ETL engine (local dev :8082; Docker maps external :8001 → internal :8082)
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8082
 ```
 
@@ -116,7 +118,7 @@ cd stock-front_ui
 
 npm install
 npm run dev
-# Visit http://localhost:5173 (/api proxied to :8081)
+# Visit http://localhost:5173 (/api proxied to backend :8000 in Docker / :8081 local)
 ```
 
 ### First Login
@@ -130,8 +132,9 @@ npm run dev
 ### Verify Installation
 
 ```bash
-# Test backend API (port :8081)
-curl http://localhost:8081/api/v1/system/meta
+# Test backend API (Docker port :8000, local dev port :8081)
+curl http://localhost:8000/api/v1/system/meta        # Docker
+curl http://localhost:8081/api/v1/system/meta         # Local dev
 
 # Expected response: {"code": 0, "message": "success", "data": {...}}
 
@@ -195,10 +198,12 @@ psql -h <主机> -U <用户> -d stock_db -f docs/09_postgresql_ddl.sql
 
 ```bash
 docker-compose up -d
-# 后端 API 地址 (FastAPI): http://localhost:8081
+# 后端 API 地址 (FastAPI): http://localhost:8000 (Docker)
 # ETL Engine: Docker :8001 / internal :8082
-# API 文档: http://localhost:8081/docs
+# API 文档: http://localhost:8000/docs
 ```
+
+> **端口说明**: Docker 后端端口为 **:8000**，本地开发使用 **:8081**。
 
 #### 步骤 5: 构建并启动前端
 
@@ -261,8 +266,9 @@ npm run dev
 ### 验证安装
 
 ```bash
-# 测试后端 API (端口 :8081)
-curl http://localhost:8081/api/v1/system/meta
+# 测试后端 API (Docker port :8000 / local dev port :8081)
+curl http://localhost:8000/api/v1/system/meta   # Docker
+curl http://localhost:8081/api/v1/system/meta    # Local dev
 
 # 测试 ETL Engine 健康检查
 curl http://localhost:8001/

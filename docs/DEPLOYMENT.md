@@ -59,26 +59,23 @@ docker build -t stock-api:latest .
 docker-compose up -d
 ```
 
-The API will be available at `http://localhost:8081`.
+The API will be available at `http://localhost:8000` (Docker) or `http://localhost:8081` (local dev).
 
-### Architecture Overview (v0.5.0+)
+### Architecture Overview (v1.6.x)
 
-Starting from v0.5.0, the system uses a **microservice architecture** with ETL Engine as a separate service:
+The system uses a **microservice architecture** with ETL Engine as a separate service:
 
 ```
-baostock/efinance → ETL Engine (:8001 ext / :8082 int) → PostgreSQL ← FastAPI (:8081) ← Frontend (:5173)
+baostock/efinance → ETL Engine (:8001 ext / :8082 int) → PostgreSQL ← FastAPI (:8000 Docker / :8081 local) ← Frontend (:5173)
 ```
 
-| Service | Container Port | External Port | Description |
-|---------|---------------|---------------|-------------|
-| etl-engine | 8001 (internal HTTP server) | 8001 | ETL data sync engine, independent Docker image in `stock-etl-engine/` |
-| stock-api | 8081 (FastAPI) | 8081 | REST API gateway, reads from PostgreSQL |
+| Service | Container Port | External Port (Docker) | Description |
+|---------|---------------|----------------------|-------------|
+| etl-engine | 8082 (internal HTTP server) | 8001 | ETL data sync engine, independent Docker image in `stock-etl-engine/` |
+| stock-api | 8000 (FastAPI) | 8000 | REST API gateway, reads from PostgreSQL |
 | stock-frontend | 80 (Nginx) | 5173 | Vue 3 admin dashboard |
 
-**Key changes in v0.5.0:**
-- ETL Engine moved to `stock-etl-engine/` as a standalone microservice with its own Docker image and scheduler (APScheduler)
-- FastAPI port changed from :8000 → :8081 externally
-- Data flow: ETL Engine fetches from baostock/efinance sources, writes to PostgreSQL; FastAPI only reads data
+> **端口说明**: Docker 后端使用 **:8000**，本地开发使用 **:8081**。前端 Nginx proxy_pass 指向 `localhost:8000`。
 
 ### Frontend Deployment
 
@@ -117,7 +114,7 @@ server {
 
     # Proxy API requests to backend
     location /api/ {
-        proxy_pass http://stock-api:8081/api/;
+        proxy_pass http://stock-api:8000/api/;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
@@ -172,7 +169,7 @@ services:
     container_name: stock-api
     restart: always
     ports:
-      - "8081:8081"
+      - "8000:8000"
     environment:
       - DB_HOST=${DB_HOST}
       - DB_PORT=${DB_PORT:-5432}
@@ -189,7 +186,7 @@ services:
       etl-engine:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8081/')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -320,26 +317,23 @@ docker build -t stock-api:latest .
 docker-compose up -d
 ```
 
-API 地址：`http://localhost:8081`
+API 地址：`http://localhost:8000`（Docker）或 `http://localhost:8081`（本地开发）
 
-### 架构概览 (v0.5.0+)
+### 架构概览 (v1.6.x)
 
-从 v0.5.0 开始，系统采用**微服务架构**，ETL Engine 作为独立服务运行：
+系统采用**微服务架构**，ETL Engine 作为独立服务运行：
 
 ```
-baostock/efinance → ETL Engine (:8001 外网 / :8082 内网) → PostgreSQL ← FastAPI (:8081) ← 前端 (:5173)
+baostock/efinance → ETL Engine (:8001 外网 / :8082 内网) → PostgreSQL ← FastAPI (:8000 Docker / :8081 本地) ← 前端 (:5173)
 ```
 
-| 服务 | 容器端口 | 外部端口 | 说明 |
-|------|---------|---------|------|
-| etl-engine | 8001（内部 HTTP 服务器） | 8001 | ETL 数据同步引擎，独立 Docker 镜像位于 `stock-etl-engine/` |
-| stock-api | 8081 (FastAPI) | 8081 | REST API 网关，只读 PostgreSQL |
+| 服务 | 容器端口 | 外部端口 (Docker) | 说明 |
+|------|---------|-----------------|------|
+| etl-engine | 8082（内部 HTTP 服务器） | 8001 | ETL 数据同步引擎，独立 Docker 镜像位于 `stock-etl-engine/` |
+| stock-api | 8000 (FastAPI) | 8000 | REST API 网关，只读 PostgreSQL |
 | stock-frontend | 80 (Nginx) | 5173 | Vue 3 管理后台 |
 
-**v0.5.0 主要变更：**
-- ETL Engine 迁移至 `stock-etl-engine/` 作为独立微服务，拥有独立的 Docker 镜像和调度器（APScheduler）
-- FastAPI 外部端口从 :8000 → :8081
-- 数据流向：ETL Engine 从 baostock/efinance 获取数据写入 PostgreSQL；FastAPI 仅负责读取数据
+> **端口说明**: Docker 后端使用 **:8000**，本地开发使用 **:8081**。前端 Nginx proxy_pass 指向 `localhost:8000`。
 
 ### 前端部署
 
@@ -376,14 +370,16 @@ server {
         try_files $uri $uri/ /index.html;
     }
 
-    # API 请求代理到后端
+    # API 请求代理到后端（Docker 内部）
     location /api/ {
-        proxy_pass http://stock-api:8081/api/;
+        proxy_pass http://stock-api:8000/api/;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
 }
 ```
+
+> **注意**: 本地开发时，Vite dev server 的 proxy_target 为 `192.168.3.18:8000`（Docker 后端端口）。
 
 ### Docker Compose（完整部署）
 
@@ -433,7 +429,7 @@ services:
     container_name: stock-api
     restart: always
     ports:
-      - "8081:8081"
+      - "8000:8000"
     environment:
       - DB_HOST=${DB_HOST}
       - DB_PORT=${DB_PORT:-5432}
@@ -450,7 +446,7 @@ services:
       etl-engine:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8081/')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
       interval: 30s
       timeout: 10s
       retries: 3

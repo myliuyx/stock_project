@@ -435,37 +435,23 @@ def main(
     skip_count = 0
     start_time = now()
 
-    # ── UPSERT SQL（参数化，供 executemany 使用）──
-    upsert_sql = """
-    INSERT INTO dwd_stock_financial_indicator
-    (symbol, report_period, report_type, announce_date, eps, bps, roe, roa,
-     gross_margin, net_margin, debt_to_asset, current_ratio, quick_ratio,
-     total_share, liqa_share, revenue, net_profit, revenue_yoy, net_profit_yoy,
-     ocf, ocf_to_revenue, source, updated_at)
-    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-    ON CONFLICT (symbol, report_period, report_type)
-    DO UPDATE SET
-        announce_date = EXCLUDED.announce_date,
-        eps = EXCLUDED.eps,
-        bps = EXCLUDED.bps,
-        roe = EXCLUDED.roe,
-        roa = EXCLUDED.roa,
-        gross_margin = EXCLUDED.gross_margin,
-        net_margin = EXCLUDED.net_margin,
-        debt_to_asset = EXCLUDED.debt_to_asset,
-        current_ratio = EXCLUDED.current_ratio,
-        quick_ratio = EXCLUDED.quick_ratio,
-        total_share = EXCLUDED.total_share,
-        liqa_share = EXCLUDED.liqa_share,
-        revenue = EXCLUDED.revenue,
-        net_profit = EXCLUDED.net_profit,
-        revenue_yoy = EXCLUDED.revenue_yoy,
-        net_profit_yoy = EXCLUDED.net_profit_yoy,
-        ocf = EXCLUDED.ocf,
-        ocf_to_revenue = EXCLUDED.ocf_to_revenue,
-        source = EXCLUDED.source,
-        updated_at = NOW()
-    """
+    # ── UPSERT SQL（通过 execute_values 批量写入，模板中仅一个 %s）──
+    _UPSERT_COLUMNS = (
+        "symbol", "report_period", "report_type", "announce_date", "eps", "bps",
+        "roe", "roa", "gross_margin", "net_margin", "debt_to_asset", "current_ratio",
+        "quick_ratio", "total_share", "liqa_share", "revenue", "net_profit",
+        "revenue_yoy", "net_profit_yoy", "ocf", "ocf_to_revenue", "source"
+    )
+
+    # 动态构建: VALUES (%s) — execute_values 负责将 batch 中每行的 %s 展开为多行 VALUES
+    _upsert_sql_template = (
+        f"INSERT INTO dwd_stock_financial_indicator ("
+        + ", ".join(_UPSERT_COLUMNS) + ", updated_at) "
+        f"VALUES (%s) ON CONFLICT (symbol, report_period, report_type) "
+        f"DO UPDATE SET "
+        + ", ".join(f"{c} = EXCLUDED.{c}" for c in _UPSERT_COLUMNS)
+        + ", updated_at = NOW()"
+    )
 
     BATCH_SIZE = 100  # 每批提交行数，与 sync_stock_daily.py 保持一致
 
@@ -475,7 +461,7 @@ def main(
             return 0
         cur = conn.cursor()
         try:
-            execute_values(cur, upsert_sql, batch, template=None, page_size=BATCH_SIZE)
+            execute_values(cur, _upsert_sql_template, batch, template=None, page_size=BATCH_SIZE)
             conn.commit()
             return len(batch)
         except Exception as e:

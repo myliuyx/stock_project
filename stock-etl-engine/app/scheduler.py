@@ -201,6 +201,25 @@ def _wrap_job_for_record(func, job_name: str):
     return wrapper
 
 
+def _log_and_reraise_error(func):
+    """包装定时任务函数：失败时记录 ERROR + traceback，然后 re-raise。
+
+    替代每个调度函数内部的手动 try/except，确保异常正确传播到 APScheduler，
+    避免静默吞掉异常导致误报 "执行成功"。
+    """
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            logger.error(f"{func.__name__} 执行失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            raise
+    wrapper.__name__ = func.__name__
+    wrapper.__doc__ = func.__doc__
+    return wrapper
+
+
 def run_cleanup_logs_job(task_id: int, job_name: str, biz_date: str | None, force: bool):
     logger.info(f"日志清理任务开始")
     try:
@@ -241,6 +260,7 @@ def is_trade_day() -> bool:
 # 替换为: APScheduler safe_wrapper + sync_stock_daily 内部 4h 超时保护 (Step 2)
 # ──────────────────────────────────────────────
 
+@_log_and_reraise_error
 def run_daily_sync():
     from app.jobs.sync_stock_daily import sync_stock_daily
 
@@ -251,16 +271,12 @@ def run_daily_sync():
         logger.info("跳过非交易日")
         return
 
-    try:
-        today = now().strftime('%Y-%m-%d')
-        sync_stock_daily(force_restart=False, start_date=today, end_date=today)
-        logger.info(f"【定时任务】日线行情同步完成")
-    except Exception as e:
-        logger.error(f"日线同步失败: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+    today = now().strftime('%Y-%m-%d')
+    sync_stock_daily(force_restart=False, start_date=today, end_date=today)
+    logger.info(f"【定时任务】日线行情同步完成")
 
 
+@_log_and_reraise_error
 def run_factor_compute():
     from app.jobs.compute_factor import main as factor_main
 
@@ -271,15 +287,11 @@ def run_factor_compute():
         logger.info("跳过非交易日")
         return
 
-    try:
-        factor_main()
-        logger.info(f"【定时任务】技术因子计算完成")
-    except Exception as e:
-        logger.error(f"技术因子计算失败: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+    factor_main()
+    logger.info(f"【定时任务】技术因子计算完成")
 
 
+@_log_and_reraise_error
 def run_selection_mart():
     from app.jobs.build_selection_mart import main as selection_main
 
@@ -290,15 +302,11 @@ def run_selection_mart():
         logger.info("跳过非交易日")
         return
 
-    try:
-        selection_main()
-        logger.info(f"【定时任务】选股宽表构建完成")
-    except Exception as e:
-        logger.error(f"选股宽表构建失败: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+    selection_main()
+    logger.info(f"【定时任务】选股宽表构建完成")
 
 
+@_log_and_reraise_error
 def run_security_master_sync():
     from app.jobs.sync_security_master import main as sync_security_master_main
 
@@ -309,15 +317,11 @@ def run_security_master_sync():
         logger.info("跳过非交易日（主数据更新）")
         return
 
-    try:
-        sync_security_master_main()
-        logger.info(f"【定时任务】股票主数据同步完成")
-    except Exception as e:
-        logger.error(f"股票主数据同步失败: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+    sync_security_master_main()
+    logger.info(f"【定时任务】股票主数据同步完成")
 
 
+@_log_and_reraise_error
 def run_new_ipo_board_sync():
     from app.jobs.sync_new_ipo_boards import sync_new_ipo_boards
 
@@ -328,15 +332,11 @@ def run_new_ipo_board_sync():
         logger.info("跳过非交易日")
         return
 
-    try:
-        sync_new_ipo_boards(days=7)
-        logger.info(f"【定时任务】新股板块增量同步完成")
-    except Exception as e:
-        logger.error(f"新股板块增量同步失败: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+    sync_new_ipo_boards(days=7)
+    logger.info(f"【定时任务】新股板块增量同步完成")
 
 
+@_log_and_reraise_error
 def run_adjust_factor_sync():
     from app.jobs.sync_adjust_factor import main as adjust_factor_main
 
@@ -347,13 +347,8 @@ def run_adjust_factor_sync():
         logger.info("跳过非交易日")
         return
 
-    try:
-        adjust_factor_main()
-        logger.info(f"【定时任务】复权因子同步完成")
-    except Exception as e:
-        logger.error(f"复权因子同步失败: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+    adjust_factor_main()
+    logger.info(f"【定时任务】复权因子同步完成")
 
 
 def run_financial_indicator_sync():

@@ -77,7 +77,9 @@ def setup_logging():
     logger.setLevel(logging.INFO)
     logger.propagate = False
     if logger.handlers:
-        logger.handlers.clear()
+        for handler in logger.handlers[:]:
+            handler.close()
+            logger.removeHandler(handler)
     fh = logging.FileHandler(log_file, encoding='utf-8')
     fh.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
     sh = logging.StreamHandler()

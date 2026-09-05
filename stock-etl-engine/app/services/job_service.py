@@ -187,16 +187,25 @@ class JobService:
         from app.core.timezone import now
 
         # 从 job_name 解析 year/quarter（兼容手动触发与定时调度）：
-        #   financial_indicator_sync_2024_1       → year=2024, quarter=1 (Q1)
-        #   financial_indicator_sync_2023_2025    → start_year=2023, end_year=2025 (区间)
+        #   financial_indicator_sync_2026_2       → sync_year=2026, sync_quarter=2 (Q2)
+        #   financial_indicator_sync_2023_2025    → start_year=2023, end_year=2025 (区间全量)
+        #   financial_indicator_sync_2026         → sync_year=2026, 季度 = 当前月份对应的 BS quarter
         #   financial                            → 定时调度：用当前季度（回退逻辑）
-        m = re.search(r"financial_indicator_sync_(\d{4})_((\d{4}))?$", job_name)
+        m = re.search(r"financial_indicator_sync_(\d{4})_?(\d+)?$", job_name)
         if m:
             year = int(m.group(1))
-            end_year = m.group(3)  # None → 单季度；有值 → 区间同步
-            if end_year is not None:
-                callable_fn = lambda y=year, ey=int(end_year): financial_main(start_year=y, end_year=ey)
+            suffix = m.group(2)  # None / str（如 "2", "2025"）
+
+            if suffix is not None and len(suffix) == 4:
+                # ✅ 区间同步：suffix 为 4 位数字 → 视为结束年份
+                end_year = int(suffix)
+                callable_fn = lambda y=year, ey=end_year: financial_main(start_year=y, end_year=ey)
+            elif suffix is not None and len(suffix) < 4:
+                # ✅ 单季度同步：suffix 为 1~3 位数字 → 视为季度号 (1-4)
+                quarter = int(suffix)
+                callable_fn = lambda y=year, q=quarter: financial_main(sync_year=y, sync_quarter=q)
             else:
+                # ✅ 仅年份：用当前月份对应的 BS quarter
                 bs_quarter = self._natural_to_bs_quarter(now().month)
                 callable_fn = lambda y=year, q=bs_quarter: financial_main(sync_year=y, sync_quarter=q)
         else:

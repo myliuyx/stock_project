@@ -40,7 +40,7 @@ Three-service monorepo with the ETL engine decoupled as an independent microserv
 
 ┌────────────────────────────────────────────────────────┐
 │    stock-etl-engine (:8001 Docker / :8082 local)        │
-│   APScheduler | 10 job scripts (6 active + paused)      │
+│   APScheduler | 11 job scripts (7 active + 1 paused + 3 unregistered) │
 │   Data sources: baostock, efinance                      │
 └────────────────────────────────────────────────────────┘
 ```
@@ -95,17 +95,18 @@ cd stock-front_ui && npm run build
 
 | Layer | Directory | Purpose |
 |-------|-----------|---------|
-| Router | `app/routers/` (12 files) | Receive requests, call services, return unified responses |
-| Schema | `app/schemas/` (10 files) | Pydantic models for request/response validation |
-| Service | `app/services/` (9 files) | Business logic and data aggregation |
-| Repository | `app/repositories/` (10 files) | Raw SQL queries via SQLAlchemy `text()` — **no ORM** |
+| Router | `app/routers/` (~10 .py + extras) | Receive requests, call services, return unified responses |
+| Schema | `app/schemas/` (~13 .py files) | Pydantic models for request/response validation |
+| Service | `app/services/` (~10 .py files) | Business logic and data aggregation |
+| Repository | `app/repositories/` (~11 .py files) | Raw SQL queries via SQLAlchemy `text()` — **no ORM** |
 
 Key core files: `core/config.py` (env vars), `core/deps.py` (DI: get_db, get_current_user), `core/exceptions.py` (BizException), `core/response.py` (unified envelope), `middleware/rate_limit.py`.
 
 ### ETL Engine Architecture (`stock-etl-engine`)
 
-- **Scheduler**: APScheduler manages cron jobs with DB tracking in `scheduler.py` (~495 lines)
+- **Scheduler**: APScheduler manages cron jobs with DB tracking in `scheduler.py` (525 lines)
 - **Job Tracking**: Each job creates RUNNING record in `etl_job_run`, updates status on completion/failure
+- **Thread-level Timeout**: `_wrap_with_timeout(func, timeout_sec=28800)` — 8h default thread-level timeout to prevent hung tasks
 - **Safety Wrapper**: `_wrap_job_for_record()` catches exceptions, logs error, marks FAILED — individual failures don't crash the scheduler
 - **Trade Day Guard**: Checks `dwd_trade_calendar` before running daily syncs
 - **Lock File**: Uses `fcntl.flock` to prevent duplicate schedulers
